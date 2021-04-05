@@ -1,3 +1,4 @@
+from ..common import *  # NOQA
 import inspect
 import json
 import os
@@ -19,7 +20,6 @@ from threading import Thread
 import websocket
 import base64
 
-DEFAULT_TIMEOUT = 120
 DEFAULT_CATALOG_TIMEOUT = 15
 DEFAULT_MONITORING_TIMEOUT = 180
 DEFAULT_CLUSTER_STATE_TIMEOUT = 320
@@ -27,13 +27,10 @@ DEFAULT_MULTI_CLUSTER_APP_TIMEOUT = 300
 DEFAULT_APP_DELETION_TIMEOUT = 360
 DEFAULT_APP_V2_TIMEOUT = 60
 
-CATTLE_TEST_URL = os.environ.get('CATTLE_TEST_URL', "")
 CATTLE_API_URL = CATTLE_TEST_URL + "/v3"
 CATTLE_AUTH_URL = \
     CATTLE_TEST_URL + "/v3-public/localproviders/local?action=login"
 
-ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN', "None")
-USER_TOKEN = os.environ.get('USER_TOKEN', "None")
 USER_PASSWORD = os.environ.get('USER_PASSWORD', "None")
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', "None")
 
@@ -218,22 +215,6 @@ def is_windows(os_type=TEST_OS):
     return os_type == "windows"
 
 
-def random_str():
-    return 'random-{0}-{1}'.format(random_num(), int(time.time()))
-
-
-def random_num():
-    return random.randint(0, 1000000)
-
-
-def random_int(start, end):
-    return random.randint(start, end)
-
-
-def random_test_name(name="test"):
-    return name + "-" + str(random_int(10000, 99999))
-
-
 def get_cluster_client_for_token_v1(cluster_id, token):
     url = CATTLE_TEST_URL + "/k8s/clusters/" + cluster_id + "/v1/schemas"
     return rancher.Client(url=url, token=token, verify=False)
@@ -289,24 +270,6 @@ def wait_for_condition(client, resource, check_function, fail_handler=None,
         time.sleep(.5)
         resource = client.reload(resource)
     return resource
-
-
-def wait_for(callback, timeout=DEFAULT_TIMEOUT, timeout_message=None):
-    start = time.time()
-    ret = callback()
-    while ret is None or ret is False:
-        time.sleep(.5)
-        if time.time() - start > timeout:
-            if timeout_message:
-                raise Exception(timeout_message)
-            else:
-                raise Exception('Timeout waiting for condition')
-        ret = callback()
-    return ret
-
-
-def random_name():
-    return "test" + "-" + str(random_int(10000, 99999))
 
 
 def get_setting_value_by_name(name):
@@ -427,16 +390,18 @@ def validate_all_workload_image_from_rancher(project_client, ns, pod_count=1,
                                              ignore_pod_count=False,
                                              deployment_list=None,
                                              daemonset_list=None,
-                                             cronjob_list=None):
+                                             cronjob_list=None, job_list=None):
     if cronjob_list is None:
         cronjob_list = []
     if daemonset_list is None:
         daemonset_list = []
     if deployment_list is None:
         deployment_list = []
-    workload_list = deployment_list + daemonset_list + cronjob_list
+    if job_list is None:
+        job_list = []
+    workload_list = deployment_list + daemonset_list + cronjob_list + job_list
 
-    wls = project_client.list_workload(namespaceId=ns.id).data
+    wls = [dep.name for dep in project_client.list_workload(namespaceId=ns.id).data]
     assert len(workload_list) == len(wls), \
         "Expected {} workload(s) to be present in {} namespace " \
         "but there were {}".format(len(workload_list), ns.name, len(wls))
@@ -466,6 +431,11 @@ def validate_all_workload_image_from_rancher(project_client, ns, pod_count=1,
                                   ns.name, pod_count=pod_count,
                                   ignore_pod_count=ignore_pod_count)
                 cronjob_list.remove(workload_name)
+            if workload_name in job_list:
+                validate_workload(project_client, workload, "job",
+                                  ns.name, pod_count=pod_count,
+                                  ignore_pod_count=ignore_pod_count)
+                job_list.remove(workload_name)
     # Final assertion to ensure all expected workloads have been validated
     assert not deployment_list + daemonset_list + cronjob_list
 
@@ -486,8 +456,15 @@ def validate_workload(p_client, workload, type, ns_name, pod_count=1,
         pods = p_client.list_pod(workloadId=workload.id).data
         assert len(pods) == pod_count
     for pod in pods:
-        p = wait_for_pod_to_running(p_client, pod)
-        assert p["status"]["phase"] == "Running"
+        if type == "job":
+            job_type = True
+            expected_status = "Succeeded"
+        else:
+            job_type = False
+            expected_status = "Running"
+        p = wait_for_pod_to_running(p_client, pod, job_type=job_type)
+        assert p["status"]["phase"] == expected_status
+
 
     wl_result = execute_kubectl_cmd(
         "get " + type + " " + workload.name + " -n " + ns_name)
@@ -497,6 +474,8 @@ def validate_workload(p_client, workload, type, ns_name, pod_count=1,
         assert wl_result["status"]["currentNumberScheduled"] == len(pods)
     if type == "cronJob":
         assert len(wl_result["status"]["active"]) >= len(pods)
+    if type == "job":
+        assert wl_result["status"]["succeeded"] == len(pods)
 
 
 def validate_workload_with_sidekicks(p_client, workload, type, ns_name,
@@ -656,12 +635,16 @@ def wait_for_wl_transitioning(client, workload, timeout=DEFAULT_TIMEOUT,
     return wl
 
 
-def wait_for_pod_to_running(client, pod, timeout=DEFAULT_TIMEOUT):
+def wait_for_pod_to_running(client, pod, timeout=DEFAULT_TIMEOUT, job_type=False):
     start = time.time()
     pods = client.list_pod(uuid=pod.uuid).data
     assert len(pods) == 1
     p = pods[0]
-    while p.state != "running":
+    if job_type:
+        expected_state = "succeeded"
+    else:
+        expected_state = "running"
+    while p.state != expected_state :
         if time.time() - start > timeout:
             raise AssertionError(
                 "Timed out waiting for state to get to active")
@@ -687,8 +670,9 @@ def get_schedulable_nodes(cluster, client=None, os_type=TEST_OS):
                         break
         # Including master in list of nodes as master is also schedulable
         if ('k3s' in cluster.version["gitVersion"] or 'rke2' in cluster.version["gitVersion"]) and node.controlPlane:
-                schedulable_nodes.append(node)
+            schedulable_nodes.append(node)
     return schedulable_nodes
+
 
 def get_etcd_nodes(cluster, client=None):
     if not client:
@@ -2523,12 +2507,10 @@ class WebsocketLogParse:
     the class is used for receiving and parsing the message
     received from the websocket
     """
-
     def __init__(self):
         self.lock = Lock()
         self._last_message = ''
-
-    def receiver(self, socket, skip):
+    def receiver(self, socket, skip, b64=True):
         """
         run a thread to receive and save the message from the web socket
         :param socket: the socket connection
@@ -2542,7 +2524,8 @@ class WebsocketLogParse:
                     data = data[1:]
                 if len(data) < 5:
                     pass
-                data = base64.b64decode(data).decode()
+                if b64:
+                    data = base64.b64decode(data).decode()
                 self.lock.acquire()
                 self._last_message += data
                 self.lock.release()

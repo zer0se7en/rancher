@@ -6,8 +6,7 @@ import (
 
 	"github.com/rancher/apiserver/pkg/parse"
 	"github.com/rancher/rancher/pkg/features"
-	"github.com/rancher/rancher/pkg/rke2configserver"
-	"github.com/rancher/rancher/pkg/wrangler"
+	"github.com/rancher/rancher/pkg/tunnelserver/mcmauthorizer"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,16 +37,12 @@ import (
 	"github.com/rancher/steve/pkg/auth"
 )
 
-func router(ctx context.Context, localClusterEnabled bool, scaledContext *config.ScaledContext, clusterManager *clustermanager.Manager, wranglerContext *wrangler.Context) (func(http.Handler) http.Handler, error) {
+func router(ctx context.Context, localClusterEnabled bool, tunnelAuthorizer *mcmauthorizer.Authorizer, scaledContext *config.ScaledContext, clusterManager *clustermanager.Manager) (func(http.Handler) http.Handler, error) {
 	var (
 		k8sProxy             = k8sProxyPkg.New(scaledContext, scaledContext.Dialer)
 		connectHandler       = scaledContext.Dialer.(*rancherdialer.Factory).TunnelServer
-		connectConfigHandler = rkenodeconfigserver.Handler(scaledContext.Dialer.(*rancherdialer.Factory).TunnelAuthorizer, scaledContext)
+		connectConfigHandler = rkenodeconfigserver.Handler(tunnelAuthorizer, scaledContext)
 		clusterImport        = clusterregistrationtokens.ClusterImport{Clusters: scaledContext.Management.Clusters("")}
-		rke2Server           = rke2configserver.New(wranglerContext.Core.ServiceAccount().Cache(),
-			wranglerContext.Core.ServiceAccount(),
-			wranglerContext.Core.Secret(),
-			wranglerContext.Mgmt.ClusterRegistrationToken().Cache())
 	)
 
 	tokenAPI, err := tokens.NewAPIHandler(ctx, scaledContext, norman.ConfigureAPIUI)
@@ -70,12 +65,13 @@ func router(ctx context.Context, localClusterEnabled bool, scaledContext *config
 		return nil, err
 	}
 
+	metricsHandler := metrics.NewMetricsHandler(scaledContext, clusterManager, promhttp.Handler())
+
 	// Unauthenticated routes
 	unauthed := mux.NewRouter()
 	unauthed.UseEncodedPath()
 
 	unauthed.Path("/").MatcherFunc(parse.MatchNotBrowser).Handler(managementAPI)
-	unauthed.Handle("/v3/connect/agent", rke2Server)
 	unauthed.Handle("/v3/connect/config", connectConfigHandler)
 	unauthed.Handle("/v3/connect", connectHandler)
 	unauthed.Handle("/v3/connect/register", connectHandler)
@@ -111,9 +107,10 @@ func router(ctx context.Context, localClusterEnabled bool, scaledContext *config
 	authed.Path("/meta/oci/{resource}").Handler(oci.NewOCIHandler(scaledContext))
 	authed.Path("/meta/vsphere/{field}").Handler(vsphere.NewVsphereHandler(scaledContext))
 	authed.Path("/v3/tokenreview").Methods(http.MethodPost).Handler(&webhook.TokenReviewer{})
+	authed.Path("/metrics").Handler(metricsHandler)
+	authed.Path("/metrics/{clusterID}").Handler(metricsHandler)
 	authed.PathPrefix("/k8s/clusters/").Handler(k8sProxy)
 	authed.PathPrefix("/meta/proxy").Handler(metaProxy)
-	authed.PathPrefix("/metrics").Handler(metrics.NewMetricsHandler(scaledContext, promhttp.Handler()))
 	authed.PathPrefix("/v1-telemetry").Handler(telemetry.NewProxy())
 	authed.PathPrefix("/v3/identit").Handler(tokenAPI)
 	authed.PathPrefix("/v3/token").Handler(tokenAPI)

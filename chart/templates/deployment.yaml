@@ -2,13 +2,16 @@ kind: Deployment
 apiVersion: apps/v1
 metadata:
   name: {{ template "rancher.fullname" . }}
+  annotations:
+{{- if (eq (int .Values.replicas) -1) }}
+    management.cattle.io/scale-available: "3"
+{{- end  }}
   labels:
-    app: {{ template "rancher.fullname" . }}
-    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
-    heritage: {{ .Release.Service }}
-    release: {{ .Release.Name }}
+{{ include "rancher.labels" . | indent 4 }}
 spec:
+{{- if (ne (int .Values.replicas) -1) }}
   replicas: {{ .Values.replicas }}
+{{- end  }}
   selector:
     matchLabels:
       app: {{ template "rancher.fullname" . }}
