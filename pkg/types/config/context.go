@@ -72,6 +72,7 @@ type ScaledContext struct {
 	Core       corev1.Interface
 	Storage    storagev1.Interface
 
+	Wrangler          *wrangler.Context
 	RunContext        context.Context
 	managementContext *ManagementContext
 }
@@ -88,6 +89,7 @@ func (c *ScaledContext) NewManagementContext() (*ManagementContext, error) {
 	mgmt.UserManager = c.UserManager
 	mgmt.SystemTokens = c.SystemTokens
 	mgmt.CatalogManager = c.CatalogManager
+	mgmt.Wrangler = c.Wrangler
 	c.managementContext = mgmt
 	return mgmt, nil
 }
@@ -193,6 +195,7 @@ type ManagementContext struct {
 	RBAC       rbacv1.Interface
 	Core       corev1.Interface
 	Apps       appsv1.Interface
+	Wrangler   *wrangler.Context
 }
 
 type UserContext struct {
@@ -222,7 +225,6 @@ type UserContext struct {
 	Policy         policyv1beta1.Interface
 
 	RBACw wrbacv1.Interface
-	rbacw *rbac.Factory
 }
 
 func (w *UserContext) UserOnlyContext() *UserOnlyContext {
@@ -451,11 +453,11 @@ func NewUserContext(scaledContext *ScaledContext, config rest.Config, clusterNam
 	opts := &generic.FactoryOptions{
 		SharedControllerFactory: controllerFactory,
 	}
-	context.rbacw, err = rbac.NewFactoryFromConfigWithOptions(&wranglerConf, opts)
+	rbacw, err := rbac.NewFactoryFromConfigWithOptions(&wranglerConf, opts)
 	if err != nil {
 		return nil, err
 	}
-	context.RBACw = context.rbacw.Rbac().V1()
+	context.RBACw = rbacw.Rbac().V1()
 
 	dynamicConfig := config
 	if dynamicConfig.NegotiatedSerializer == nil {

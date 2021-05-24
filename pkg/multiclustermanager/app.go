@@ -64,6 +64,8 @@ func buildScaledContext(ctx context.Context, wranglerContext *wrangler.Context, 
 		return nil, nil, nil, err
 	}
 
+	scaledContext.Wrangler = wranglerContext
+
 	if features.Legacy.Enabled() {
 		scaledContext.CatalogManager = manager.New(scaledContext.Management, scaledContext.Project)
 	}
@@ -130,13 +132,13 @@ func newMCM(ctx context.Context, wranglerContext *wrangler.Context, cfg *Options
 
 	go func() {
 		<-ctx.Done()
-		mcm.started()
+		mcm.started(ctx)
 	}()
 
 	return mcm, nil
 }
 
-func (m *mcm) started() {
+func (m *mcm) started(ctx context.Context) {
 	m.startLock.Lock()
 	defer m.startLock.Unlock()
 	select {
@@ -169,8 +171,6 @@ func (m *mcm) Start(ctx context.Context) error {
 		management *config.ManagementContext
 	)
 
-	defer m.started()
-
 	if dm := os.Getenv("CATTLE_DEV_MODE"); dm == "" {
 		if err := jailer.CreateJail("driver-jail"); err != nil {
 			return err
@@ -192,7 +192,7 @@ func (m *mcm) Start(ctx context.Context) error {
 				return errors.Wrap(err, "failed to create management context")
 			}
 
-			if err := managementdata.Add(m.wranglerContext, management); err != nil {
+			if err := managementdata.Add(ctx, m.wranglerContext, management); err != nil {
 				return errors.Wrap(err, "failed to add management data")
 			}
 
@@ -214,6 +214,7 @@ func (m *mcm) Start(ctx context.Context) error {
 		providerrefresh.StartRefreshDaemon(ctx, m.ScaledContext, management)
 		managementdata.CleanupOrphanedSystemUsers(ctx, management)
 		clusterupstreamrefresher.MigrateEksRefreshCronSetting(m.wranglerContext)
+		managementdata.CleanupDuplicateBindings(m.ScaledContext, m.wranglerContext)
 		logrus.Infof("Rancher startup complete")
 		return nil
 	})

@@ -1,5 +1,37 @@
 ---
 kind: pipeline
+name: provisioning-tests
+
+platform:
+  os: linux
+  arch: amd64
+
+steps:
+- name: provisioning-tests
+  image: rancher/dapper:v0.5.4
+  commands:
+  - dapper provisioning-tests
+  privileged: true
+  volumes:
+  - name: docker
+    path: /var/run/docker.sock
+  when:
+    event:
+    - push
+    - pull_request
+    - tag
+
+volumes:
+- name: docker
+  host:
+    path: /var/run/docker.sock
+
+trigger:
+  event:
+    exclude:
+    - promote
+---
+kind: pipeline
 name: default-linux-amd64
 
 platform:
@@ -194,6 +226,8 @@ steps:
     - "bin/rancher-*"
     - "bin/rancherd-*"
     prerelease: true
+    title: "Pre-release ${DRONE_TAG}"
+    note: ./bin/rancher-components.txt
   when:
     event:
     - tag
@@ -504,227 +538,6 @@ trigger:
   event:
     exclude:
       - promote
----
-kind: pipeline
-name: default-windows-1903
-
-platform:
-  os: windows
-  arch: amd64
-  version: 1903
-
-steps:
-  - name: build
-    pull: always
-    image: rancher/dapper:v0.5.4
-    commands:
-      - dapper.exe -f Dockerfile-windows.dapper -d ci
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      event:
-        - push
-        - pull_request
-        - tag
-
-  - name: stage-binaries
-    image: rancher/dapper:v0.5.4
-    commands:
-      - "cp -r ./bin/* ./package/windows/"
-    when:
-      event:
-        - push
-        - tag
-
-  - name: docker-publish-head-agent
-    image: plugins/docker:windows-1903-amd64
-    settings:
-      purge: false
-      build_args:
-        - SERVERCORE_VERSION=1903
-        - ARCH=amd64
-        - VERSION=${DRONE_BRANCH/release\//}-${DRONE_COMMIT}-head
-      context: package/windows
-      custom_dns: 1.1.1.1
-      dockerfile: package/windows/Dockerfile.agent
-      password:
-        from_secret: docker_password
-      repo: rancher/rancher-agent
-      tag: ${DRONE_BRANCH/release\//}-${DRONE_COMMIT}-windows-1903
-      username:
-        from_secret: docker_username
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      ref:
-        include:
-        - "refs/heads/master"
-        - "refs/heads/release/v*"
-      event:
-        - push
-
-  - name: docker-publish-agent
-    image: plugins/docker:windows-1903-amd64
-    settings:
-      purge: false
-      build_args:
-        - SERVERCORE_VERSION=1903
-        - ARCH=amd64
-        - "VERSION=${DRONE_TAG}"
-      context: package/windows
-      custom_dns: 1.1.1.1
-      dockerfile: package/windows/Dockerfile.agent
-      password:
-        from_secret: docker_password
-      repo: rancher/rancher-agent
-      tag: "${DRONE_TAG}-windows-1903"
-      username:
-        from_secret: docker_username
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      event:
-        - tag
-
-  - name: slack_notify
-    image: plugins/slack
-    settings:
-      template: "Build {{build.link}} failed to publish an image/artifact.\n"
-      username: Drone_Publish
-      webhook:
-        from_secret: slack_webhook
-    when:
-      event:
-        exclude:
-          - pull_request
-      instance:
-        - drone-publish.rancher.io
-      status:
-        - failure
-
-volumes:
-  - name: docker_pipe
-    host:
-      path: \\\\.\\pipe\\docker_engine
-
-trigger:
-  event:
-    exclude:
-      - promote
-
----
-kind: pipeline
-name: default-windows-1909
-
-platform:
-  os: windows
-  arch: amd64
-  version: 1909
-
-steps:
-  - name: build
-    pull: always
-    image: rancher/dapper:v0.5.4
-    commands:
-      - dapper.exe -f Dockerfile-windows.dapper -d ci
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      event:
-        - push
-        - pull_request
-        - tag
-
-  - name: stage-binaries
-    image: rancher/dapper:v0.5.4
-    commands:
-      - "cp -r ./bin/* ./package/windows/"
-    when:
-      event:
-        - push
-        - tag
-
-  - name: docker-publish-head-agent
-    image: plugins/docker:windows-1909-amd64
-    settings:
-      purge: false
-      build_args:
-        - SERVERCORE_VERSION=1909
-        - ARCH=amd64
-        - VERSION=${DRONE_BRANCH/release\//}-${DRONE_COMMIT}-head
-      context: package/windows
-      custom_dns: 1.1.1.1
-      dockerfile: package/windows/Dockerfile.agent
-      password:
-        from_secret: docker_password
-      repo: rancher/rancher-agent
-      tag: ${DRONE_BRANCH/release\//}-${DRONE_COMMIT}-windows-1909
-      username:
-        from_secret: docker_username
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      ref:
-        include:
-          - "refs/heads/master"
-          - "refs/heads/release/v*"
-      event:
-        - push
-
-  - name: docker-publish-agent
-    image: plugins/docker:windows-1909-amd64
-    settings:
-      purge: false
-      build_args:
-        - SERVERCORE_VERSION=1909
-        - ARCH=amd64
-        - "VERSION=${DRONE_TAG}"
-      context: package/windows
-      custom_dns: 1.1.1.1
-      dockerfile: package/windows/Dockerfile.agent
-      password:
-        from_secret: docker_password
-      repo: rancher/rancher-agent
-      tag: "${DRONE_TAG}-windows-1909"
-      username:
-        from_secret: docker_username
-    volumes:
-      - name: docker_pipe
-        path: \\\\.\\pipe\\docker_engine
-    when:
-      event:
-        - tag
-
-  - name: slack_notify
-    image: plugins/slack
-    settings:
-      template: "Build {{build.link}} failed to publish an image/artifact.\n"
-      username: Drone_Publish
-      webhook:
-        from_secret: slack_webhook
-    when:
-      event:
-        exclude:
-          - pull_request
-      instance:
-        - drone-publish.rancher.io
-      status:
-        - failure
-
-volumes:
-  - name: docker_pipe
-    host:
-      path: \\\\.\\pipe\\docker_engine
-
-trigger:
-  event:
-    exclude:
-      - promote
 
 ---
 kind: pipeline
@@ -741,7 +554,7 @@ clone:
 
 steps:
   - name: clone
-    image: luthermonson/drone-git:windows-2004-amd64
+    image: rancher/drone-images:git-2004
     settings:
       depth: 20
   - name: build
@@ -768,7 +581,7 @@ steps:
         - tag
 
   - name: docker-publish-head-agent
-    image: luthermonson/drone-docker:2004
+    image: rancher/drone-images:docker-2004
     settings:
       purge: false
       build_args:
@@ -796,7 +609,7 @@ steps:
         - push
 
   - name: docker-publish-agent
-    image: luthermonson/drone-docker:2004
+    image: rancher/drone-images:docker-2004
     settings:
       purge: false
       build_args:
@@ -859,7 +672,7 @@ clone:
 
 steps:
   - name: clone
-    image: luthermonson/drone-git:windows-20H2-amd64
+    image: rancher/drone-images:git-20H2
     settings:
       depth: 20
   - name: build
@@ -886,7 +699,7 @@ steps:
         - tag
 
   - name: docker-publish-head-agent
-    image: luthermonson/drone-docker:20H2
+    image: rancher/drone-images:docker-20H2
     settings:
       purge: false
       build_args:
@@ -914,7 +727,7 @@ steps:
         - push
 
   - name: docker-publish-agent
-    image: luthermonson/drone-docker:20H2
+    image: rancher/drone-images:docker-20H2
     settings:
       purge: false
       build_args:
@@ -1017,6 +830,21 @@ steps:
     event:
     - push
 
+- name: push-manifest-head
+  image: plugins/manifest
+  settings:
+    username:
+      from_secret: docker_username
+    password:
+      from_secret: docker_password
+    spec: manifest-head.tmpl
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - push
+
 - name: push-manifest
   image: plugins/manifest
   settings:
@@ -1091,9 +919,238 @@ depends_on:
 - default-linux-amd64
 - default-linux-arm64
 - default-windows-1809
-- default-windows-1903
-- default-windows-1909
 - default-windows-2004
+- default-windows-20H2
+---
+kind: pipeline
+name: docker-image-digests-linux-amd64
+
+platform:
+  os: linux
+  arch: amd64
+
+steps:
+- name: docker-image-digests
+  image: rancher/drone-docker-image-digests:v0.0.11
+  environment:
+    PLUGIN_GITHUB_REPOSITORY: "rancher/rancher"
+    PLUGIN_GITHUB_TOKEN:
+      from_secret: github_token
+    PLUGIN_GITHUB_TAG: "${DRONE_TAG}"
+    PLUGIN_INPUT_FILE: "rancher-images.txt"
+    PLUGIN_OUTPUT_FILE: "rancher-images-digests-linux-amd64.txt"
+    PLUGIN_REGISTRY: "docker.io"
+  volumes:
+  - name: docker
+    path: /var/run/docker.sock
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - tag
+
+volumes:
+- name: docker
+  host:
+    path: /var/run/docker.sock
+
+trigger:
+  event:
+    exclude:
+    - promote
+
+depends_on:
+- default-linux-amd64
+---
+kind: pipeline
+name: docker-image-digests-linux-arm64
+
+platform:
+  os: linux
+  arch: arm64
+
+steps:
+- name: docker-image-digests
+  image: rancher/drone-docker-image-digests:v0.0.11
+  environment:
+    PLUGIN_GITHUB_REPOSITORY: "rancher/rancher"
+    PLUGIN_GITHUB_TOKEN:
+      from_secret: github_token
+    PLUGIN_GITHUB_TAG: "${DRONE_TAG}"
+    PLUGIN_INPUT_FILE: "rancher-images.txt"
+    PLUGIN_OUTPUT_FILE: "rancher-images-digests-linux-arm64.txt"
+    PLUGIN_REGISTRY: "docker.io"
+  volumes:
+  - name: docker
+    path: /var/run/docker.sock
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - tag
+
+volumes:
+- name: docker
+  host:
+    path: /var/run/docker.sock
+
+trigger:
+  event:
+    exclude:
+    - promote
+
+depends_on:
+- default-linux-amd64
+- default-linux-arm64
+---
+kind: pipeline
+name: docker-image-digests-windows-1809
+
+platform:
+  os: windows
+  arch: amd64
+  version: 1809
+
+steps:
+- name: docker-image-digests
+  image: rancher/drone-docker-image-digests:v0.0.11
+  environment:
+    PLUGIN_GITHUB_REPOSITORY: "rancher/rancher"
+    PLUGIN_GITHUB_TOKEN:
+      from_secret: github_token
+    PLUGIN_GITHUB_TAG: "${DRONE_TAG}"
+    PLUGIN_INPUT_FILE: "rancher-windows-images.txt"
+    PLUGIN_OUTPUT_FILE: "rancher-images-digests-windows-1809.txt"
+    PLUGIN_REGISTRY: "docker.io"
+  volumes:
+    - name: docker_pipe
+      path: \\\\.\\pipe\\docker_engine
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - tag
+
+volumes:
+  - name: docker_pipe
+    host:
+      path: \\\\.\\pipe\\docker_engine
+
+trigger:
+  event:
+    exclude:
+    - promote
+
+depends_on:
+- default-linux-amd64
+- default-windows-1809
+
+---
+kind: pipeline
+name: docker-image-digests-windows-2004
+
+platform:
+  os: windows
+  arch: amd64
+  version: 2004
+
+# remove this and use upstream images when https://github.com/drone/drone-git/pull/25 is merged
+clone:
+  disable: true
+
+steps:
+- name: clone
+  image: luthermonson/drone-git:windows-2004-amd64
+  settings:
+    depth: 20
+
+- name: docker-image-digests
+  image: rancher/drone-docker-image-digests:v0.0.11
+  environment:
+    PLUGIN_GITHUB_REPOSITORY: "rancher/rancher"
+    PLUGIN_GITHUB_TOKEN:
+      from_secret: github_token
+    PLUGIN_GITHUB_TAG: "${DRONE_TAG}"
+    PLUGIN_INPUT_FILE: "rancher-windows-images.txt"
+    PLUGIN_OUTPUT_FILE: "rancher-images-digests-windows-2004.txt"
+    PLUGIN_REGISTRY: "docker.io"
+  volumes:
+    - name: docker_pipe
+      path: \\\\.\\pipe\\docker_engine
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - tag
+
+volumes:
+  - name: docker_pipe
+    host:
+      path: \\\\.\\pipe\\docker_engine
+
+trigger:
+  event:
+    exclude:
+    - promote
+
+depends_on:
+- default-linux-amd64
+- default-windows-2004
+---
+kind: pipeline
+name: docker-image-digests-windows-20H2
+
+platform:
+  os: windows
+  arch: amd64
+  version: 20H2
+
+# remove this and use upstream images when https://github.com/drone/drone-git/pull/25 is merged
+clone:
+  disable: true
+
+steps:
+- name: clone
+  image: luthermonson/drone-git:windows-20H2-amd64
+  settings:
+    depth: 1
+
+- name: docker-image-digests
+  image: rancher/drone-docker-image-digests:v0.0.11
+  environment:
+    PLUGIN_GITHUB_REPOSITORY: "rancher/rancher"
+    PLUGIN_GITHUB_TOKEN:
+      from_secret: github_token
+    PLUGIN_GITHUB_TAG: "${DRONE_TAG}"
+    PLUGIN_INPUT_FILE: "rancher-windows-images.txt"
+    PLUGIN_OUTPUT_FILE: "rancher-images-digests-windows-20H2.txt"
+    PLUGIN_REGISTRY: "docker.io"
+  volumes:
+    - name: docker_pipe
+      path: \\\\.\\pipe\\docker_engine
+  when:
+    instance:
+      include:
+      - drone-publish.rancher.io
+    event:
+    - tag
+
+volumes:
+  - name: docker_pipe
+    host:
+      path: \\\\.\\pipe\\docker_engine
+
+trigger:
+  event:
+    exclude:
+    - promote
+
+depends_on:
+- default-linux-amd64
 - default-windows-20H2
 ---
 kind: pipeline
@@ -1127,6 +1184,11 @@ steps:
     target: releases.rancher.com/server-charts
     token:
       from_secret: google_auth_key
+  when:
+    event:
+    - promote
+    target:
+    - promote-stable
 
 - name: slack_notify
   image: plugins/slack
@@ -1137,8 +1199,64 @@ steps:
       from_secret: slack_webhook
   when:
     event:
-      exclude:
-        - pull_request
+    - promote
+    target:
+    - promote-stable
+    instance:
+      - drone-publish.rancher.io
+    status:
+      - failure
+
+volumes:
+- name: docker
+  host:
+    path: /var/run/docker.sock
+
+trigger:
+  event:
+  - promote
+---
+kind: pipeline
+name: promote-docker-image
+
+platform:
+  os: linux
+  arch: amd64
+
+steps:
+- name: docker-image-promote
+  image: quay.io/skopeo/stable:v1.1.1
+  commands:
+  - echo $${DOCKER_PASSWORD} | skopeo login docker.io --username $${DOCKER_USERNAME} --password-stdin
+  - skopeo copy docker://rancher/rancher:$${SOURCE_TAG} docker://rancher/rancher:$${DESTINATION_TAG} --all
+  settings:
+    custom_dns: 1.1.1.1
+  volumes:
+  - name: docker
+    path: /var/run/docker.sock
+  environment:
+    DOCKER_PASSWORD:
+      from_secret: docker_password
+    DOCKER_USERNAME:
+      from_secret: docker_username
+  when:
+    event:
+    - promote
+    target:
+    - promote-docker-image
+
+- name: slack_notify
+  image: plugins/slack
+  settings:
+    template: "Build {{build.link}} failed to push Docker image.\n"
+    username: Drone_Publish
+    webhook:
+      from_secret: slack_webhook
+  when:
+    event:
+    - promote
+    target:
+    - promote-docker-image
     instance:
       - drone-publish.rancher.io
     status:

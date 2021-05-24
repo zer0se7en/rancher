@@ -70,6 +70,7 @@ type Interface interface {
 	GroupMember() GroupMemberController
 	KontainerDriver() KontainerDriverController
 	LocalProvider() LocalProviderController
+	ManagedChart() ManagedChartController
 	MonitorMetric() MonitorMetricController
 	MultiClusterApp() MultiClusterAppController
 	MultiClusterAppRevision() MultiClusterAppRevisionController
@@ -236,6 +237,9 @@ func (c *version) KontainerDriver() KontainerDriverController {
 }
 func (c *version) LocalProvider() LocalProviderController {
 	return NewLocalProviderController(schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "LocalProvider"}, "localproviders", false, c.controllerFactory)
+}
+func (c *version) ManagedChart() ManagedChartController {
+	return NewManagedChartController(schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "ManagedChart"}, "managedcharts", true, c.controllerFactory)
 }
 func (c *version) MonitorMetric() MonitorMetricController {
 	return NewMonitorMetricController(schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "MonitorMetric"}, "monitormetrics", true, c.controllerFactory)

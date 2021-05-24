@@ -33,8 +33,8 @@ var (
 		"multi-cluster-management",
 		"Multi-cluster provisioning and management of Kubernetes clusters.",
 		true,
-		true,
-		false)
+		false,
+		true)
 	Fleet = newFeature(
 		"fleet",
 		"Install Fleet when starting Rancher",
@@ -51,17 +51,23 @@ var (
 		"embedded-cluster-api",
 		"Enable an embedded instance of cluster-api core controller",
 		true,
-		true,
-		true)
+		false,
+		false)
 	RKE2 = newFeature(
 		"rke2",
 		"Enable provisioning of RKE2",
 		true,
-		true,
+		false,
 		true)
 	Legacy = newFeature(
 		"legacy",
 		"Enable legacy features",
+		true,
+		false,
+		true)
+	ProvisioningV2 = newFeature(
+		"provisioningv2",
+		"Enable cluster-api based provisioning framework",
 		true,
 		false,
 		false)

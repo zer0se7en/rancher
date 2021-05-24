@@ -203,12 +203,6 @@ spec:
           - name: cattle-credentials
             mountPath: /cattle-credentials
             readOnly: true
-          readinessProbe:
-            initialDelaySeconds: 2
-            periodSeconds: 5
-            httpGet:
-              path: /health
-              port: 8080
       {{- if .PrivateRegistryConfig}}
       imagePullSecrets:
       - name: cattle-private-registry
@@ -444,6 +438,24 @@ spec:
                   values:
                     - windows
                 - key: node-role.kubernetes.io/controlplane
+                  operator: In
+                  values:
+                    - "true"
+              - matchExpressions:
+                - key: beta.kubernetes.io/os
+                  operator: NotIn
+                  values:
+                    - windows
+                - key: node-role.kubernetes.io/control-plane
+                  operator: In
+                  values:
+                    - "true"
+              - matchExpressions:
+                - key: beta.kubernetes.io/os
+                  operator: NotIn
+                  values:
+                    - windows
+                - key: node-role.kubernetes.io/master
                   operator: In
                   values:
                     - "true"

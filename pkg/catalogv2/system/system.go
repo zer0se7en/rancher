@@ -76,8 +76,12 @@ func NewManager(ctx context.Context,
 		desiredCharts:    map[desiredKey]map[string]interface{}{},
 	}
 
-	go m.runSync()
 	return m, nil
+}
+
+func (m *Manager) Start(ctx context.Context) {
+	m.ctx = ctx
+	go m.runSync()
 }
 
 func (m *Manager) runSync() {
@@ -116,6 +120,29 @@ func (m *Manager) installCharts(charts map[desiredKey]map[string]interface{}) {
 			break
 		}
 	}
+}
+
+func (m *Manager) Uninstall(namespace, name string) error {
+	helmcfg := &action.Configuration{}
+	if err := helmcfg.Init(m.restClientGetter, namespace, "", logrus.Infof); err != nil {
+		return err
+	}
+
+	l := action.NewList(helmcfg)
+	l.Filter = "^" + name + "$"
+
+	releases, err := l.Run()
+	if err != nil {
+		return err
+	}
+
+	if len(releases) == 0 {
+		return nil
+	}
+
+	uninstall := action.NewUninstall(helmcfg)
+	_, err = uninstall.Run(name)
+	return err
 }
 
 func (m *Manager) Ensure(namespace, name, minVersion string, values map[string]interface{}) error {

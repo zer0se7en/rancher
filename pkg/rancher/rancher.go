@@ -2,6 +2,7 @@ package rancher
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	responsewriter "github.com/rancher/apiserver/pkg/middleware"
@@ -49,7 +50,6 @@ type Options struct {
 	AuditLogMaxsize   int
 	AuditLogMaxbackup int
 	AuditLevel        int
-	Agent             bool
 	Features          string
 }
 
@@ -83,17 +83,17 @@ func New(ctx context.Context, clientConfg clientcmd.ClientConfig, opts *Options)
 		return nil, err
 	}
 
-	lockID := "cattle-controllers"
-	if opts.Agent {
-		lockID = "cattle-agent-controllers"
-	}
-
-	wranglerContext, err := wrangler.NewContext(ctx, lockID, clientConfg, restConfig)
+	wranglerContext, err := wrangler.NewContext(ctx, clientConfg, restConfig)
 	if err != nil {
 		return nil, err
 	}
 	wranglerContext.MultiClusterManager = newMCM(wranglerContext, opts)
-	wranglerContext.Agent = opts.Agent
+
+	// Initialize Features as early as possible
+	if err := crds.CreateFeatureCRD(ctx, restConfig); err != nil {
+		return nil, err
+	}
+	features.InitializeFeatures(wranglerContext.Mgmt.Feature(), opts.Features)
 
 	podsecuritypolicytemplate.RegisterIndexers(wranglerContext)
 	kontainerdriver.RegisterIndexers(wranglerContext)
@@ -103,17 +103,11 @@ func New(ctx context.Context, clientConfg clientcmd.ClientConfig, opts *Options)
 		return nil, err
 	}
 
-	// Initialize Features as early as possible
-	features.InitializeFeatures(wranglerContext.Mgmt.Feature(), opts.Features)
+	if features.MCM.Enabled() && !features.Fleet.Enabled() {
+		return nil, fmt.Errorf("multi-cluster-management features requires feature fleet=true")
+	}
 
-	if opts.Agent {
-		authServer, err = auth.NewHeaderAuth()
-		if err != nil {
-			return nil, err
-		}
-		features.MCM.Disable()
-		features.Fleet.Disable()
-	} else if features.Auth.Enabled() {
+	if features.Auth.Enabled() {
 		authServer, err = auth.NewServer(ctx, restConfig)
 		if err != nil {
 			return nil, err
@@ -138,7 +132,7 @@ func New(ctx context.Context, clientConfg clientcmd.ClientConfig, opts *Options)
 	}
 
 	clusterProxy, err := proxy.NewProxyMiddleware(wranglerContext.K8s.AuthorizationV1().SubjectAccessReviews(),
-		wranglerContext.MultiClusterManager,
+		wranglerContext.TunnelServer.Dialer,
 		wranglerContext.Mgmt.Cluster().Cache(),
 		localClusterEnabled(opts),
 		steve,
@@ -147,6 +141,7 @@ func New(ctx context.Context, clientConfg clientcmd.ClientConfig, opts *Options)
 		return nil, err
 	}
 
+	additionalAPIPreMCM := steveapi.AdditionalAPIsPreMCM(wranglerContext)
 	additionalAPI, err := steveapi.AdditionalAPIs(ctx, wranglerContext, steve)
 	if err != nil {
 		return nil, err
@@ -160,15 +155,17 @@ func New(ctx context.Context, clientConfg clientcmd.ClientConfig, opts *Options)
 		Auth: authServer.Authenticator.Chain(
 			auditFilter),
 		Handler: responsewriter.Chain{
+			auth.SetXAPICattleAuthHeader,
 			responsewriter.ContentTypeOptions,
 			websocket.NewWebsocketHandler,
 			proxy.RewriteLocalCluster,
 			clusterProxy,
 			aggregation,
+			additionalAPIPreMCM,
 			wranglerContext.MultiClusterManager.Middleware,
 			authServer.Management,
 			additionalAPI,
-			requests.NewRequireAuthenticatedFilter("/v1/"),
+			requests.NewRequireAuthenticatedFilter("/v1/", "/v1/management.cattle.io.settings"),
 		}.Handler(steve),
 		Wrangler:   wranglerContext,
 		Steve:      steve,
@@ -191,11 +188,17 @@ func (r *Rancher) Start(ctx context.Context) error {
 		return err
 	}
 
+	if features.MCM.Enabled() {
+		if err := r.Wrangler.MultiClusterManager.Start(ctx); err != nil {
+			return err
+		}
+	}
+
 	r.Wrangler.OnLeader(func(ctx context.Context) error {
+		if err := dashboarddata.Add(ctx, r.Wrangler, localClusterEnabled(r.opts), r.opts.AddLocal == "false", r.opts.Embedded); err != nil {
+			return err
+		}
 		return r.Wrangler.StartWithTransaction(ctx, func(ctx context.Context) error {
-			if err := dashboarddata.Add(ctx, r.Wrangler, localClusterEnabled(r.opts), r.opts.AddLocal == "false", r.opts.Embedded); err != nil {
-				return err
-			}
 			return dashboard.Register(ctx, r.Wrangler)
 		})
 	})
@@ -217,6 +220,7 @@ func (r *Rancher) ListenAndServe(ctx context.Context) error {
 
 	r.Wrangler.MultiClusterManager.Wait(ctx)
 
+	go r.Steve.StartAggregation(ctx)
 	if err := tls.ListenAndServe(ctx, r.Wrangler.RESTConfig,
 		r.Auth(r.Handler),
 		r.opts.BindHost,
