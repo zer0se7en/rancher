@@ -46,13 +46,10 @@ func MachineStateSecretName(machineName string) string {
 	return name2.SafeConcatName(machineName, "machine", "state")
 }
 
-func (h *handler) getArgsEnvAndStatus(typeMeta meta.Type, meta metav1.Object, data data.Object, create bool) (driverArgs, error) {
+func (h *handler) getArgsEnvAndStatus(typeMeta meta.Type, meta metav1.Object, data data.Object, args map[string]interface{}, driver string, create bool) (driverArgs, error) {
 	var (
 		url, hash, cloudCredentialSecretName string
 	)
-
-	args := data.Map("spec")
-	driver := getNodeDriverName(typeMeta)
 
 	nd, err := h.nodeDriverCache.Get(driver)
 	if !create && apierror.IsNotFound(err) {
@@ -167,7 +164,7 @@ func (h *handler) getSecretData(meta metav1.Object, obj data.Object, create bool
 		}
 
 		machine, err = h.machines.Get(meta.GetNamespace(), ref.Name)
-		if err != nil {
+		if err != nil && !apierror.IsNotFound(err) {
 			return "", "", nil, err
 		}
 	}

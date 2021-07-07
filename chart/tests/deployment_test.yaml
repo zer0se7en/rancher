@@ -50,6 +50,11 @@ tests:
         value: NAMESPACE
       - name: CATTLE_PEER_SERVICE
         value: RELEASE-NAME-rancher
+      - name: CATTLE_BOOTSTRAP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: "bootstrap-secret"
+              key: "bootstrapPassword"
 - it: should default imagePullPolicy to IfNotPresent
   asserts:
   - equal:
@@ -179,7 +184,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: vue
 - it: should mount custom-logos volume with default subpaths if customLogos.enabled and customLogos.volumeKind=persistentVolumeClaim and customLogos.volumeSubpaths.* blank 
@@ -198,7 +203,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: vue
 - it: should mount custom-logos volume with specified subpaths if customLogos.enabled and customLogos.volumeKind=persistentVolumeClaim
@@ -217,7 +222,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: test_vue
 - it: should mount custom-logos volume with default subpaths if customLogos.enabled and customLogos.volumeKind=persistentVolumeClaim and customLogos.volumeName
@@ -235,7 +240,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: vue
 - it: should mount custom-logos volume with default subpaths if customLogos.enabled and customLogos.volumeKind=persistentVolumeClaim and customLogos.volumeName and customLogos.volumeSubpaths.* blank 
@@ -255,7 +260,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: vue
 - it: should mount custom-logos volume with specified subpaths if customLogos.enabled and customLogos.volumeKind=persistentVolumeClaim and customLogos.volumeName
@@ -275,7 +280,7 @@ tests:
   - contains:
       path: spec.template.spec.containers[0].volumeMounts
       content:
-        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/img/pl
+        mountPath: /usr/share/rancher/ui-dashboard/dashboard/_nuxt/assets/images/pl
         name: custom-logos
         subPath: test_vue
 - it: should not mount custom-logos volume if customLogos.enabled and customLogos.volumeKind=configMap but no customLogos.volumeName

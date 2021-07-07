@@ -397,7 +397,7 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 			responseType := s.clientState.GetState(r, "Rancher_ResponseType")
 			publicKey := s.clientState.GetState(r, "Rancher_PublicKey")
 
-			token, err := tokens.GetKubeConfigToken(user.Name, responseType, s.userMGR)
+			token, tokenValue, err := tokens.GetKubeConfigToken(user.Name, responseType, s.userMGR)
 			if err != nil {
 				log.Errorf("SAML: getToken error %v", err)
 				http.Redirect(w, r, redirectURL+"errorCode=500", http.StatusFound)
@@ -405,6 +405,11 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 			}
 
 			keyBytes, err := base64.StdEncoding.DecodeString(publicKey)
+			if err != nil {
+				log.Errorf("SAML: base64 DecodeString error %v", err)
+				http.Redirect(w, r, redirectURL+"errorCode=500", http.StatusFound)
+				return
+			}
 			pubKey := &rsa.PublicKey{}
 			err = json.Unmarshal(keyBytes, pubKey)
 			if err != nil {
@@ -416,7 +421,7 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 				sha256.New(),
 				rand.Reader,
 				pubKey,
-				[]byte(fmt.Sprintf("%s:%s", token.ObjectMeta.Name, token.Token)),
+				[]byte(fmt.Sprintf("%s:%s", token.ObjectMeta.Name, tokenValue)),
 				nil)
 			if err != nil {
 				log.Errorf("SAML: getEncryptedToken error %v", err)

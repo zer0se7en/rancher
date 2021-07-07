@@ -69,7 +69,7 @@ func retryWatch(ctx context.Context, watchFunc watchFunc, cb func(obj runtime.Ob
 	}
 }
 
-func Object(ctx context.Context, watchFunc WatchFunc, obj runtime.Object, cb func(obj runtime.Object) (bool, error)) error {
+func Object(ctx context.Context, watchFunc WatchFunc, obj runtime.Object, cb func(obj runtime.Object) (bool, error)) (err error) {
 	if done, err := cb(obj); err != nil || done {
 		return err
 	}
@@ -85,5 +85,7 @@ func Object(ctx context.Context, watchFunc WatchFunc, obj runtime.Object, cb fun
 			ResourceVersion: meta.GetResourceVersion(),
 			TimeoutSeconds:  &defaults.WatchTimeoutSeconds,
 		})
-	}, cb)
+	}, func(obj runtime.Object) (bool, error) {
+		return cb(obj)
+	})
 }

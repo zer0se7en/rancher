@@ -80,11 +80,7 @@ func (v *Validator) Validator(request *types.APIContext, schema *types.Schema, d
 		return err
 	}
 
-	if err := v.validateGKEConfig(request, data, &clusterSpec); err != nil {
-		return err
-	}
-
-	return nil
+	return v.validateGKEConfig(request, data, &clusterSpec)
 }
 
 func (v *Validator) validateScheduledClusterScan(spec *mgmtclient.Cluster) error {
@@ -315,11 +311,7 @@ func (v *Validator) accessTemplate(request *types.APIContext, spec *mgmtclient.C
 	}
 
 	var ctMap map[string]interface{}
-	if err := access.ByID(request, &mgmtSchema.Version, mgmtclient.ClusterTemplateType, clusterTempRev.Spec.ClusterTemplateName, &ctMap); err != nil {
-		return err
-	}
-
-	return nil
+	return access.ByID(request, &mgmtSchema.Version, mgmtclient.ClusterTemplateType, clusterTempRev.Spec.ClusterTemplateName, &ctMap)
 }
 
 // validateGenericEngineConfig allows for additional validation of clusters that depend on Kontainer Engine or Rancher Machine driver
@@ -381,6 +373,20 @@ func (v *Validator) validateAKSConfig(request *types.APIContext, cluster map[str
 		}
 	}
 
+	if request.Method != http.MethodPost {
+		return nil
+	}
+
+	// validation for creates only
+	if err := validateAKSClusterName(v.ClusterClient, clusterSpec); err != nil {
+		return err
+	}
+
+	region, regionOk := aksConfig["resourceLocation"]
+	if !regionOk || region == "" {
+		return httperror.NewAPIError(httperror.InvalidBodyContent, "must provide region")
+	}
+
 	return nil
 }
 
@@ -416,6 +422,9 @@ func validateAKSCredentialAuth(request *types.APIContext, credential string, pre
 // validateAKSKubernetesVersion checks whether a kubernetes version is provided
 func validateAKSKubernetesVersion(spec *v32.ClusterSpec, prevCluster *v3.Cluster) error {
 	clusterVersion := spec.AKSConfig.KubernetesVersion
+	if clusterVersion == nil {
+		return nil
+	}
 
 	if to.String(clusterVersion) == "" {
 		return httperror.NewAPIError(httperror.InvalidBodyContent, "cluster kubernetes version cannot be empty string")
@@ -432,16 +441,47 @@ func validateAKSNodePools(spec *v32.ClusterSpec) error {
 		return nil
 	}
 	if len(nodePools) == 0 {
-		return httperror.NewAPIError(httperror.InvalidBodyContent, fmt.Sprintf("must have at least one nodepool"))
+		return httperror.NewAPIError(httperror.InvalidBodyContent, "must have at least one nodepool")
 	}
 
 	for _, np := range nodePools {
 		name := np.Name
 		if to.String(name) == "" {
-			return httperror.NewAPIError(httperror.InvalidBodyContent, fmt.Sprintf("nodePool Name cannot be an empty string"))
+			return httperror.NewAPIError(httperror.InvalidBodyContent, "nodePool Name cannot be an empty string")
+		}
+		if np.OsType == "Windows" {
+			return httperror.NewAPIError(httperror.InvalidBodyContent, "windows node pools are not supported")
 		}
 	}
 
+	return nil
+}
+
+func validateAKSClusterName(client v3.ClusterInterface, spec *v32.ClusterSpec) error {
+	// validate cluster does not reference an AKS cluster that is already backed by a Rancher cluster
+	name := spec.AKSConfig.ClusterName
+	region := spec.AKSConfig.ResourceLocation
+	msgSuffix := fmt.Sprintf("in region [%s]", region)
+
+	// cluster client is being used instead of lister to avoid the use of an outdated cache
+	clusters, err := client.List(metav1.ListOptions{})
+	if err != nil {
+		return httperror.NewAPIError(httperror.ServerError, "failed to confirm clusterName is unique among Rancher AKS clusters "+msgSuffix)
+	}
+
+	for _, cluster := range clusters.Items {
+		if cluster.Spec.AKSConfig == nil {
+			continue
+		}
+		if name != cluster.Spec.AKSConfig.ClusterName {
+			continue
+		}
+		if region != "" && region != cluster.Spec.AKSConfig.ResourceLocation {
+			continue
+		}
+
+		return httperror.NewAPIError(httperror.InvalidBodyContent, fmt.Sprintf("cluster already exists for AKS cluster [%s] "+msgSuffix, name))
+	}
 	return nil
 }
 
@@ -655,7 +695,6 @@ func (v *Validator) validateGKEConfig(request *types.APIContext, cluster map[str
 	}
 
 	var prevCluster *v3.Cluster
-
 	if request.Method == http.MethodPut {
 		var err error
 		prevCluster, err = v.ClusterLister.Get("", request.ID)
@@ -671,8 +710,11 @@ func (v *Validator) validateGKEConfig(request *types.APIContext, cluster map[str
 		}
 	}
 
-	createFromImport := request.Method == http.MethodPost && gkeConfig["imported"] == true
+	if err := v.validateGKENetworkPolicy(clusterSpec, prevCluster); err != nil {
+		return err
+	}
 
+	createFromImport := request.Method == http.MethodPost && gkeConfig["imported"] == true
 	if !createFromImport {
 		if err := validateGKEKubernetesVersion(clusterSpec, prevCluster); err != nil {
 			return err
@@ -692,10 +734,37 @@ func (v *Validator) validateGKEConfig(request *types.APIContext, cluster map[str
 		return err
 	}
 
+	if err := validateGKEPrivateClusterConfig(clusterSpec); err != nil {
+		return err
+	}
+
 	region, regionOk := gkeConfig["region"]
 	zone, zoneOk := gkeConfig["zone"]
 	if (!regionOk || region == "") && (!zoneOk || zone == "") {
 		return httperror.NewAPIError(httperror.InvalidBodyContent, "must provide region or zone")
+	}
+
+	return nil
+}
+
+// validateGKENetworkPolicy performs validation around setting enableNetworkPolicy on GKE clusters which turns on Project Network Isolation
+func (v *Validator) validateGKENetworkPolicy(clusterSpec *v32.ClusterSpec, prevCluster *v3.Cluster) error {
+	// determine if network policy is enabled on the GKE cluster by checking the cluster spec and then the upstream spec if the field is nil (unmanaged)
+	var netPolEnabled bool
+	if clusterSpec.GKEConfig != nil && clusterSpec.GKEConfig.NetworkPolicyEnabled != nil {
+		netPolEnabled = *clusterSpec.GKEConfig.NetworkPolicyEnabled
+	} else if prevCluster != nil && prevCluster.Status.GKEStatus.UpstreamSpec != nil && prevCluster.Status.GKEStatus.UpstreamSpec.NetworkPolicyEnabled != nil {
+		netPolEnabled = *prevCluster.Status.GKEStatus.UpstreamSpec.NetworkPolicyEnabled
+	} else {
+		return nil
+	}
+
+	// network policy enabled on the GKE cluster is a prerequisite for PNI
+	if enableNetPol := clusterSpec.EnableNetworkPolicy; enableNetPol != nil && *enableNetPol && !netPolEnabled {
+		return httperror.NewAPIError(
+			httperror.InvalidBodyContent,
+			"Network Policy support must be enabled on GKE cluster in order to enable Project Network Isolation",
+		)
 	}
 
 	return nil
@@ -818,6 +887,13 @@ func validateGKEClusterName(client v3.ClusterInterface, spec *v32.ClusterSpec) e
 			continue
 		}
 		return httperror.NewAPIError(httperror.InvalidBodyContent, fmt.Sprintf("cluster already exists for GKE cluster [%s] "+msgSuffix, name))
+	}
+	return nil
+}
+
+func validateGKEPrivateClusterConfig(spec *v32.ClusterSpec) error {
+	if spec.GKEConfig.PrivateClusterConfig != nil && spec.GKEConfig.PrivateClusterConfig.EnablePrivateEndpoint && !spec.GKEConfig.PrivateClusterConfig.EnablePrivateNodes {
+		return httperror.NewAPIError(httperror.InvalidBodyContent, fmt.Sprintf("private endpoint requires private nodes"))
 	}
 	return nil
 }

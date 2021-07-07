@@ -92,8 +92,8 @@ func addKontainerDrivers(management *config.ManagementContext) error {
 	}
 	if err := creator.addCustomDriver(
 		"oraclecontainerengine",
-		"https://github.com/rancher-plugins/kontainer-engine-driver-oke/releases/download/v1.6.0/kontainer-engine-driver-oke-linux",
-		"14074b9b566d977685bac685b1da8f6452cc6c9e5b77963bf511aa4c9e77e50f",
+		"https://github.com/rancher-plugins/kontainer-engine-driver-oke/releases/download/v1.7.0/kontainer-engine-driver-oke-linux",
+		"f3ebd80db7464dd63f8e8bd669c36fa3361ceba0c991cb766445c05d4fff125d",
 		"",
 		false,
 		"*.oraclecloud.com",
@@ -111,18 +111,14 @@ func addKontainerDrivers(management *config.ManagementContext) error {
 		return err
 	}
 
-	if err := creator.addCustomDriver(
+	return creator.addCustomDriver(
 		"opentelekomcloudcontainerengine",
 		"https://otc-rancher.obs.eu-de.otc.t-systems.com/cluster/driver/1.0.2/kontainer-engine-driver-otccce_linux_amd64.tar.gz",
 		"f2c0a8d1195cd51ae1ccdeb4a8defd2c3147b9a2c7510b091be0c12028740f5f",
-		"https://otc-rancher.obs.eu-de.otc.t-systems.com/cluster/ui/v1.0.3/component.js",
+		"https://otc-rancher.obs.eu-de.otc.t-systems.com/cluster/ui/v1.1.0/component.js",
 		false,
 		"*.otc.t-systems.com",
-	); err != nil {
-		return err
-	}
-
-	return nil
+	)
 }
 
 func cleanupImportDriver(creator driverCreator) error {

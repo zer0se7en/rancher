@@ -57,7 +57,8 @@ require (
 	github.com/bep/debounce v1.2.0
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/bshuster-repo/logrus-logstash-hook v1.0.0 // indirect
-	github.com/coreos/etcd v3.3.17+incompatible
+	github.com/coreos/go-iptables v0.6.0
+	github.com/coreos/go-oidc/v3 v3.0.0
 	github.com/coreos/go-semver v0.3.0
 	github.com/crewjam/saml v0.4.5
 	github.com/davecgh/go-spew v1.1.1
@@ -83,38 +84,38 @@ require (
 	github.com/knative/pkg v0.0.0-20190817231834-12ee58e32cc8
 	github.com/mattn/go-colorable v0.1.8
 	github.com/mcuadros/go-version v0.0.0-20180611085657-6d5863ca60fa
-	github.com/minio/minio-go v0.0.0-20190523192347-c6c2912aa552
+	github.com/minio/minio-go/v7 v7.0.10
 	github.com/mitchellh/mapstructure v1.1.2
 	github.com/moby/locker v1.0.1
 	github.com/mrjones/oauth v0.0.0-20180629183705-f4e24b6d100c
 	github.com/oracle/oci-go-sdk v18.0.0+incompatible
 	github.com/pborman/uuid v1.2.0
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.44.1
+	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.48.0
 	github.com/prometheus/client_golang v1.9.0
 	github.com/prometheus/client_model v0.2.0
 	github.com/prometheus/common v0.15.0
-	github.com/rancher/aks-operator v1.0.1-rc4
+	github.com/rancher/aks-operator v1.0.1-rc14
 	github.com/rancher/apiserver v0.0.0-20210519053359-f943376c4b42
-	github.com/rancher/channelserver v0.5.1-0.20210421200213-5495c5f6e430
-	github.com/rancher/dynamiclistener v0.2.1-0.20201110045217-9b1b7d3132e8
-	github.com/rancher/eks-operator v1.0.6-rc1
-	github.com/rancher/fleet/pkg/apis v0.0.0-20210428191153-f414eab0e4de
-	github.com/rancher/gke-operator v1.0.1
+	github.com/rancher/channelserver v0.5.1-0.20210618172430-5cbefd383369
+	github.com/rancher/dynamiclistener v0.3.1-0.20210616080009-9865ae859c7f
+	github.com/rancher/eks-operator v1.1.1-rc3
+	github.com/rancher/fleet/pkg/apis v0.0.0-20210608014113-99e848822739
+	github.com/rancher/gke-operator v1.1.1-rc5
 	github.com/rancher/kubernetes-provider-detector v0.1.2
-	github.com/rancher/lasso v0.0.0-20210521213517-f33d4f991ffe
-	github.com/rancher/lasso/controller-runtime v0.0.0-20210521213517-f33d4f991ffe
+	github.com/rancher/lasso v0.0.0-20210616224652-fc3ebd901c08
+	github.com/rancher/lasso/controller-runtime v0.0.0-20210608205930-775fcaf2f523
 	github.com/rancher/machine v0.15.0-rancher60
-	github.com/rancher/norman v0.0.0-20210513204752-e48df26b54bd
+	github.com/rancher/norman v0.0.0-20210608202517-59b3523c3133
 	github.com/rancher/rancher/pkg/apis v0.0.0
 	github.com/rancher/rancher/pkg/client v0.0.0
 	github.com/rancher/rdns-server v0.0.0-20180802070304-bf662911db6a
 	github.com/rancher/remotedialer v0.2.6-0.20210318171128-d1ebd5202be4
-	github.com/rancher/rke v1.3.0-rc1.0.20210521165717-bb0d38e303a5
+	github.com/rancher/rke v1.3.0-rc8
 	github.com/rancher/security-scan v0.1.7-0.20200222041501-f7377f127168
 	github.com/rancher/steve v0.0.0-20210520191028-52f86dce9bd4
 	github.com/rancher/system-upgrade-controller/pkg/apis v0.0.0-20210424054953-634d28b7def3
-	github.com/rancher/wrangler v0.8.1-0.20210521213200-39dd8bf93e9f
+	github.com/rancher/wrangler v0.8.1-0.20210618171953-ab479ee75244
 	github.com/robfig/cron v1.1.0
 	github.com/satori/go.uuid v1.2.0
 	github.com/segmentio/kafka-go v0.0.0-20190411192201-218fd49cff39
@@ -122,6 +123,7 @@ require (
 	github.com/stretchr/testify v1.7.0
 	github.com/tomnomnom/linkheader v0.0.0-20180905144013-02ca5825eb80
 	github.com/urfave/cli v1.22.2
+	github.com/vishvananda/netlink v1.1.0
 	github.com/vmihailenco/msgpack v4.0.1+incompatible
 	github.com/vmware/govmomi v0.23.2-0.20201015235820-81318771d0e0
 	github.com/vmware/kube-fluentd-operator v0.0.0-20190307154903-bf9de7e79eaf
@@ -131,7 +133,7 @@ require (
 	github.com/yvasiyarov/go-metrics v0.0.0-20150112132944-c25f46c4b940 // indirect
 	github.com/yvasiyarov/gorelic v0.0.7 // indirect
 	github.com/yvasiyarov/newrelic_platform_go v0.0.0-20160601141957-9c099fbc30e9 // indirect
-	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
+	golang.org/x/crypto v0.0.0-20210513164829-c07d793c2f9a
 	golang.org/x/net v0.0.0-20210315170653-34ac3e1c2000
 	golang.org/x/oauth2 v0.0.0-20201208152858-08078c50e5b5
 	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a

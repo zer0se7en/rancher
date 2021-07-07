@@ -41,17 +41,33 @@ func List() (result []crd.CRD) {
 func provisioning() []crd.CRD {
 	return []crd.CRD{
 		newRancherCRD(&v1.Cluster{}, func(c crd.CRD) crd.CRD {
+			c.Labels = map[string]string{
+				"auth.cattle.io/cluster-indexed": "true",
+			}
 			return c.
 				WithColumn("Ready", ".status.ready").
 				WithColumn("Kubeconfig", ".status.clientSecretName")
 		}),
+		newRancherCRD(&v1.ManagedOS{}, func(c crd.CRD) crd.CRD {
+			return c
+		}),
 	}
+}
+
+func clusterIndexed(c crd.CRD) crd.CRD {
+	newLabels := map[string]string{}
+	for k, v := range c.Labels {
+		newLabels[k] = v
+	}
+	newLabels["auth.cattle.io/cluster-indexed"] = "true"
+	c.Labels = newLabels
+	return c
 }
 
 func rke2() []crd.CRD {
 	return []crd.CRD{
 		newRancherCRD(&v1.Cluster{}, func(c crd.CRD) crd.CRD {
-			return c.
+			return clusterIndexed(c).
 				WithColumn("Ready", ".status.ready").
 				WithColumn("Kubeconfig", ".status.clientSecretName")
 		}),
@@ -59,37 +75,37 @@ func rke2() []crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 		newRKECRD(&rkev1.RKEControlPlane{}, func(c crd.CRD) crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 		newRKECRD(&rkev1.RKEBootstrap{}, func(c crd.CRD) crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 		newRKECRD(&rkev1.RKEBootstrapTemplate{}, func(c crd.CRD) crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 		newRKECRD(&rkev1.RKEControlPlane{}, func(c crd.CRD) crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 		newRKECRD(&rkev1.CustomMachine{}, func(c crd.CRD) crd.CRD {
 			c.Labels = map[string]string{
 				"cluster.x-k8s.io/v1alpha4": "v1",
 			}
-			return c
+			return clusterIndexed(c)
 		}),
 	}
 }
@@ -135,6 +151,12 @@ func capi() []crd.CRD {
 		}
 		if unstr, ok := obj.(*unstructured.Unstructured); ok &&
 			capiCRDs[data.Object(unstr.Object).String("spec", "names", "kind")] {
+			labels := unstr.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels["auth.cattle.io/cluster-indexed"] = "true"
+			unstr.SetLabels(labels)
 			result = append(result, crd.CRD{
 				Override: obj,
 			})

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,8 +43,10 @@ import (
 	rkeservices "github.com/rancher/rke/services"
 	rketypes "github.com/rancher/rke/types"
 	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/dynamic"
 )
 
 const (
@@ -62,6 +65,7 @@ type Store struct {
 	NodeLister                    v3.NodeLister
 	ClusterLister                 v3.ClusterLister
 	DialerFactory                 dialer.Factory
+	ClusterClient                 dynamic.ResourceInterface
 }
 
 type transformer struct {
@@ -135,6 +139,14 @@ func GetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterMa
 		NodeLister:                    mgmt.Management.Nodes("").Controller().Lister(),
 		DialerFactory:                 mgmt.Dialer,
 	}
+
+	dynamicClient, err := dynamic.NewForConfig(&mgmt.RESTConfig)
+	if err != nil {
+		logrus.Warnf("GetClusterStore error creating K8s dynamic client: %v", err)
+	} else {
+		s.ClusterClient = dynamicClient.Resource(v3.ClusterGroupVersionResource)
+	}
+
 	schema.Store = s
 	return s
 }
@@ -543,21 +555,19 @@ func (r *Store) Update(apiContext *types.APIContext, schema *types.Schema, data 
 		return nil, err
 	}
 
-	// Replace rancherKubernetesEngineConfig.cloudProvider.vsphereCloudProvider.virtualCenter value to properly update virtualCenter removal
+	// When any rancherKubernetesEngineConfig.cloudProvider.vsphereCloudProvider.virtualCenter has been removed, updating cluster using k8s dynamic client to properly
+	// replace cluster spec. This is required due to r.Store.Update is merging this data instead of replacing it, https://github.com/rancher/rancher/issues/27306
 	if newVCenter, ok := values.GetValue(data, "rancherKubernetesEngineConfig", "cloudProvider", "vsphereCloudProvider", "virtualCenter"); ok && newVCenter != nil {
-		oldVCenter, ok := values.GetValue(existingCluster, "rancherKubernetesEngineConfig", "cloudProvider", "vsphereCloudProvider", "virtualCenter")
-		if ok && oldVCenter != nil && !reflect.DeepEqual(newVCenter, oldVCenter) {
-			newData := map[string]interface{}{}
-			for k, v := range data {
-				newData[k] = v
+		if oldVCenter, ok := values.GetValue(existingCluster, "rancherKubernetesEngineConfig", "cloudProvider", "vsphereCloudProvider", "virtualCenter"); ok && oldVCenter != nil {
+			if oldVCenterMap, oldOk := oldVCenter.(map[string]interface{}); oldOk && oldVCenterMap != nil {
+				if newVCenterMap, newOk := newVCenter.(map[string]interface{}); newOk && newVCenterMap != nil {
+					for k := range oldVCenterMap {
+						if _, ok := newVCenterMap[k]; !ok && oldVCenterMap[k] != nil {
+							return r.updateClusterByK8sclient(apiContext.Request.Context(), id, updatedName, data)
+						}
+					}
+				}
 			}
-			// Update virtualCenter value to nil
-			values.PutValue(newData, nil, "rancherKubernetesEngineConfig", "cloudProvider", "vsphereCloudProvider", "virtualCenter")
-			if _, err := r.Store.Update(apiContext, schema, newData, id); err != nil {
-				return nil, err
-			}
-			// Set virtualCenter value to newVCenter
-			values.PutValue(data, newVCenter, "rancherKubernetesEngineConfig", "cloudProvider", "vsphereCloudProvider", "virtualCenter")
 		}
 	}
 
@@ -606,6 +616,35 @@ func (r *Store) getDynamicField(data map[string]interface{}) (string, error) {
 	}
 
 	return "", nil
+}
+
+func (r *Store) updateClusterByK8sclient(ctx context.Context, id, name string, data map[string]interface{}) (map[string]interface{}, error) {
+	logrus.Tracef("Updating cluster [%s] using K8s dynamic client", id)
+	if r.ClusterClient == nil {
+		return nil, fmt.Errorf("Error updating the cluster: k8s client is nil")
+	}
+
+	object, err := r.ClusterClient.Get(ctx, id, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("Error updating the cluster: %v", err)
+	}
+
+	// Replacing name by displayName to properly update cluster using k8s format
+	values.PutValue(data, name, "displayName")
+	values.RemoveValue(data, "name")
+
+	// Setting data as cluster spec before update
+	object.Object["spec"] = data
+	object, err = r.ClusterClient.Update(ctx, object, metav1.UpdateOptions{})
+	if err != nil || object == nil {
+		return nil, fmt.Errorf("Error updating the cluster: %v", err)
+	}
+
+	// Replacing displayName by name to properly return updated data using API format
+	values.PutValue(object.Object, name, "spec", "name")
+	values.RemoveValue(object.Object, "spec", "displayName")
+
+	return object.Object["spec"].(map[string]interface{}), nil
 }
 
 func canUseClusterName(apiContext *types.APIContext, requestedName string) error {
@@ -700,21 +739,20 @@ func getSupportedK8sVersion(k8sVersionRequest string) (string, error) {
 
 func validateNetworkFlag(data map[string]interface{}, create bool) error {
 	enableNetworkPolicy := values.GetValueN(data, "enableNetworkPolicy")
-	rkeConfig := values.GetValueN(data, "rancherKubernetesEngineConfig")
-
 	if enableNetworkPolicy == nil && create {
 		// setting default values for new clusters if value not passed
 		values.PutValue(data, false, "enableNetworkPolicy")
 	} else if value := convert.ToBool(enableNetworkPolicy); value {
-		if rkeConfig == nil {
+		rke2Config := values.GetValueN(data, "rke2Config")
+		k3sConfig := values.GetValueN(data, "k3sConfig")
+		if rke2Config != nil || k3sConfig != nil {
 			if create {
 				values.PutValue(data, false, "enableNetworkPolicy")
 				return nil
 			}
-			return fmt.Errorf("enableNetworkPolicy should be false for non-RKE clusters")
+			return fmt.Errorf("enableNetworkPolicy should be false for k3s or rke2 clusters")
 		}
 	}
-
 	return nil
 }
 
@@ -923,7 +961,7 @@ func validateS3Credentials(data map[string]interface{}, dialer dialer.Dialer) er
 	if err != nil {
 		return err
 	}
-	exists, err := s3Client.BucketExists(bucket)
+	exists, err := s3Client.BucketExists(context.TODO(), bucket)
 	if err != nil {
 		return fmt.Errorf("Unable to validate S3 backup target configuration: %v", err)
 	}

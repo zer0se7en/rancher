@@ -19,12 +19,14 @@ import (
 	"github.com/rancher/rancher/pkg/apis/rke.cattle.io/v1/plan"
 	capicontrollers "github.com/rancher/rancher/pkg/generated/controllers/cluster.x-k8s.io/v1alpha4"
 	mgmtcontrollers "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
+	rkecontrollers "github.com/rancher/rancher/pkg/generated/controllers/rke.cattle.io/v1"
 	"github.com/rancher/rancher/pkg/provisioningv2/kubeconfig"
 	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rancher/pkg/wrangler"
 	"github.com/rancher/wrangler/pkg/data/convert"
 	corecontrollers "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/pkg/generic"
+	"github.com/rancher/wrangler/pkg/kv"
 	"github.com/rancher/wrangler/pkg/name"
 	"github.com/rancher/wrangler/pkg/randomtoken"
 	"github.com/rancher/wrangler/pkg/summary"
@@ -43,12 +45,16 @@ const (
 	clusterRegToken   = "clusterRegToken"
 	JoinURLAnnotation = "rke.cattle.io/join-url"
 
-	InitNodeLabel         = "rke.cattle.io/init-node"
-	EtcdRoleLabel         = "rke.cattle.io/etcd-role"
-	WorkerRoleLabel       = "rke.cattle.io/worker-role"
-	ControlPlaneRoleLabel = "rke.cattle.io/control-plane-role"
-	MachineUIDLabel       = "rke.cattle.io/machine"
-	capiMachineLabel      = "cluster.x-k8s.io/cluster-name"
+	NodeNameLabel              = "rke.cattle.io/node-name"
+	InitNodeLabel              = "rke.cattle.io/init-node"
+	InitNodeMachineIDLabel     = "rke.cattle.io/init-node-machine-id"
+	InitNodeMachineIDDoneLabel = "rke.cattle.io/init-node-machine-id-done"
+	EtcdRoleLabel              = "rke.cattle.io/etcd-role"
+	WorkerRoleLabel            = "rke.cattle.io/worker-role"
+	ControlPlaneRoleLabel      = "rke.cattle.io/control-plane-role"
+	MachineUIDLabel            = "rke.cattle.io/machine"
+	MachineIDLabel             = "rke.cattle.io/machine-id"
+	capiMachineLabel           = "cluster.x-k8s.io/cluster-name"
 
 	MachineNameLabel      = "rke.cattle.io/machine-name"
 	MachineNamespaceLabel = "rke.cattle.io/machine-namespace"
@@ -66,6 +72,7 @@ var (
 		"audit-policy-file",
 		"cloud-provider-config",
 		"private-registry",
+		"flannel-conf",
 	}
 	AuthnWebhook = []byte(`
 apiVersion: v1
@@ -105,6 +112,7 @@ type roleFilter func(machine *capi.Machine) bool
 type Planner struct {
 	ctx                           context.Context
 	store                         *PlanStore
+	rkeControlPlanes              rkecontrollers.RKEControlPlaneClient
 	secretClient                  corecontrollers.SecretClient
 	secretCache                   corecontrollers.SecretCache
 	machines                      capicontrollers.MachineClient
@@ -115,6 +123,7 @@ type Planner struct {
 	locker                        locker.Locker
 	etcdRestore                   *etcdRestore
 	etcdCreate                    *etcdCreate
+	etcdArgs                      s3Args
 }
 
 func New(ctx context.Context, clients *wrangler.Context) *Planner {
@@ -132,6 +141,7 @@ func New(ctx context.Context, clients *wrangler.Context) *Planner {
 		clusterRegistrationTokenCache: clients.Mgmt.ClusterRegistrationToken().Cache(),
 		capiClusters:                  clients.CAPI.Cluster().Cache(),
 		managementClusters:            clients.Mgmt.Cluster().Cache(),
+		rkeControlPlanes:              clients.RKE.RKEControlPlane(),
 		kubeconfig:                    kubeconfig.New(clients),
 		etcdRestore:                   newETCDRestore(clients, store),
 		etcdCreate:                    newETCDCreate(clients, store),
@@ -179,57 +189,49 @@ func (p *Planner) Process(controlPlane *rkev1.RKEControlPlane) error {
 		joinServer       string
 	)
 
-	if secret.ServerToken == "" {
-		// This is logic for clusters that are formed outside of Rancher
-		// In this situation you either have nodes with worker role or no role
-		err = p.reconcile(controlPlane, secret, plan, "etcd and control plane", true, noRole, isInitNode,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, joinServer,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
-		firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
-		if err != nil {
-			return err
-		}
-	} else {
-		if err := p.etcdCreate.Create(controlPlane, plan); err != nil {
-			return err
-		}
+	if err := p.etcdCreate.Create(controlPlane, plan); err != nil {
+		return err
+	}
 
-		if err := p.etcdRestore.Restore(controlPlane, plan); err != nil {
-			return err
-		}
+	if err := p.etcdRestore.Restore(controlPlane, plan); err != nil {
+		return err
+	}
 
-		if _, err := p.electInitNode(plan); err != nil {
-			return err
-		}
+	if _, err := p.electInitNode(controlPlane, plan); err != nil {
+		return err
+	}
 
-		err = p.reconcile(controlPlane, secret, plan, "bootstrap", true, isInitNode, none,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, "",
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
-		firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
-		if err != nil {
-			return err
-		}
+	err = p.reconcile(controlPlane, secret, plan, "bootstrap", true, isInitNode, none,
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, "",
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
+	firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
+	if err != nil {
+		return err
+	}
 
-		joinServer, err = p.electInitNode(plan)
-		if err != nil || joinServer == "" {
-			return err
-		}
+	joinServer, err = p.electInitNode(controlPlane, plan)
+	if err != nil {
+		return err
+	} else if joinServer == "" && firstIgnoreError != nil {
+		return ErrWaiting(firstIgnoreError.Error() + " and join url to be available on bootstrap node")
+	} else if joinServer == "" {
+		return ErrWaiting("waiting for join url to be available on bootstrap node")
+	}
 
-		err = p.reconcile(controlPlane, secret, plan, "etcd", true, isEtcd, isInitNode,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, joinServer,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
-		firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
-		if err != nil {
-			return err
-		}
+	err = p.reconcile(controlPlane, secret, plan, "etcd", true, isEtcd, isInitNode,
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, joinServer,
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
+	firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
+	if err != nil {
+		return err
+	}
 
-		err = p.reconcile(controlPlane, secret, plan, "control plane", true, isControlPlane, isInitNode,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, joinServer,
-			controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
-		firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
-		if err != nil {
-			return err
-		}
+	err = p.reconcile(controlPlane, secret, plan, "control plane", true, isControlPlane, isInitNode,
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneConcurrency, joinServer,
+		controlPlane.Spec.UpgradeStrategy.ControlPlaneDrainOptions)
+	firstIgnoreError, err = ignoreErrors(firstIgnoreError, err)
+	if err != nil {
+		return err
 	}
 
 	joinServer = p.getControlPlaneJoinURL(plan)
@@ -270,7 +272,11 @@ func (p *Planner) clearInitNodeMark(machine *capi.Machine) error {
 	machine = machine.DeepCopy()
 	delete(machine.Labels, InitNodeLabel)
 	_, err := p.machines.Update(machine)
-	return err
+	if err != nil {
+		return err
+	}
+	// We've changed state, so let the caches sync up again
+	return generic.ErrSkip
 }
 
 func (p *Planner) setInitNodeMark(machine *capi.Machine) (*capi.Machine, error) {
@@ -282,7 +288,11 @@ func (p *Planner) setInitNodeMark(machine *capi.Machine) (*capi.Machine, error) 
 		machine.Labels = map[string]string{}
 	}
 	machine.Labels[InitNodeLabel] = "true"
-	return p.machines.Update(machine)
+	if _, err := p.machines.Update(machine); err != nil {
+		return nil, err
+	}
+	// We've changed state, so let the caches sync up again
+	return nil, generic.ErrSkip
 }
 
 func (p *Planner) getControlPlaneJoinURL(plan *plan.Plan) string {
@@ -296,7 +306,30 @@ func (p *Planner) getControlPlaneJoinURL(plan *plan.Plan) string {
 	return ""
 }
 
-func (p *Planner) electInitNode(plan *plan.Plan) (string, error) {
+func (p *Planner) electInitNode(rkeControlPlane *rkev1.RKEControlPlane, plan *plan.Plan) (string, error) {
+	// fixedMachineID is used when bootstrapping the local rancherd cluster to ensure the exact machine
+	// gets picked for the init-not
+	fixedMachineID := rkeControlPlane.Labels[InitNodeMachineIDLabel]
+	if fixedMachineID != "" && rkeControlPlane.Labels[InitNodeMachineIDDoneLabel] == "" {
+		entries := collect(plan, func(machine *capi.Machine) bool {
+			return machine.Labels[MachineIDLabel] == fixedMachineID
+		})
+		if len(entries) != 1 {
+			return "", nil
+		}
+		_, err := p.setInitNodeMark(entries[0].Machine)
+		if err != nil {
+			return "", err
+		}
+		rkeControlPlane = rkeControlPlane.DeepCopy()
+		rkeControlPlane.Labels[InitNodeMachineIDDoneLabel] = "true"
+		_, err = p.rkeControlPlanes.Update(rkeControlPlane)
+		if err != nil {
+			return "", err
+		}
+		return entries[0].Machine.Annotations[JoinURLAnnotation], nil
+	}
+
 	entries := collect(plan, isEtcd)
 	joinURL := ""
 	initNodeFound := false
@@ -367,6 +400,17 @@ func calculateConcurrency(maxUnavailable string, entries []planEntry, exclude ro
 	return int(math.Ceil(max)), unavailable, nil
 }
 
+func detailMessage(machines []string, messages map[string]string) string {
+	if len(machines) != 1 {
+		return ""
+	}
+	message := messages[machines[0]]
+	if message != "" {
+		return ": " + message
+	}
+	return ""
+}
+
 func (p *Planner) reconcile(controlPlane *rkev1.RKEControlPlane, secret plan.Secret, clusterPlan *plan.Plan,
 	tierName string,
 	required bool,
@@ -377,6 +421,7 @@ func (p *Planner) reconcile(controlPlane *rkev1.RKEControlPlane, secret plan.Sec
 		errMachines []string
 		draining    []string
 		uncordoned  []string
+		messages    = map[string]string{}
 	)
 
 	entries := collect(clusterPlan, include)
@@ -399,6 +444,7 @@ func (p *Planner) reconcile(controlPlane *rkev1.RKEControlPlane, secret plan.Sec
 		if summary.Transitioning {
 			nonReady = append(nonReady, entry.Machine.Name)
 		}
+		messages[entry.Machine.Name] = strings.Join(summary.Message, ", ")
 
 		plan, err := p.desiredPlan(controlPlane, secret, entry, isInitNode(entry.Machine), joinServer)
 		if err != nil {
@@ -449,28 +495,28 @@ func (p *Planner) reconcile(controlPlane *rkev1.RKEControlPlane, secret plan.Sec
 	errMachines = atMostThree(errMachines)
 	if len(errMachines) > 0 {
 		// we want these errors to get reported, but not block the process
-		return errIgnore("failing " + tierName + " machine(s) " + strings.Join(errMachines, ","))
+		return errIgnore("failing " + tierName + " machine(s) " + strings.Join(errMachines, ",") + detailMessage(errMachines, messages))
 	}
 
 	outOfSync = atMostThree(outOfSync)
 	if len(outOfSync) > 0 {
-		return ErrWaiting("provisioning " + tierName + " node(s) " + strings.Join(outOfSync, ","))
+		return ErrWaiting("provisioning " + tierName + " node(s) " + strings.Join(outOfSync, ",") + detailMessage(outOfSync, messages))
 	}
 
 	draining = atMostThree(draining)
 	if len(draining) > 0 {
-		return ErrWaiting("draining " + tierName + " node(s) " + strings.Join(outOfSync, ","))
+		return ErrWaiting("draining " + tierName + " node(s) " + strings.Join(draining, ",") + detailMessage(draining, messages))
 	}
 
 	uncordoned = atMostThree(uncordoned)
 	if len(uncordoned) > 0 {
-		return ErrWaiting("uncordoning " + tierName + " node(s) " + strings.Join(outOfSync, ","))
+		return ErrWaiting("uncordoning " + tierName + " node(s) " + strings.Join(uncordoned, ",") + detailMessage(uncordoned, messages))
 	}
 
 	nonReady = atMostThree(nonReady)
 	if len(nonReady) > 0 {
 		// we want these errors to get reported, but not block the process
-		return errIgnore("non-ready " + tierName + " machine(s) " + strings.Join(nonReady, ","))
+		return errIgnore("non-ready " + tierName + " machine(s) " + strings.Join(nonReady, ",") + detailMessage(nonReady, messages))
 	}
 
 	return nil
@@ -487,23 +533,37 @@ func atMostThree(names []string) []string {
 	return names
 }
 
-func (p *Planner) addETCDSnapshotCredential(config map[string]interface{}, controlPlane *rkev1.RKEControlPlane, machine *capi.Machine) error {
-	if !isEtcd(machine) || controlPlane.Spec.ETCDSnapshotCloudCredentialName == "" {
-		return nil
+func (p *Planner) addETCD(config map[string]interface{}, controlPlane *rkev1.RKEControlPlane, machine *capi.Machine) (result []plan.File, _ error) {
+	if !isEtcd(machine) || controlPlane.Spec.ETCD == nil {
+		return nil, nil
 	}
 
-	cred, err := getS3Credential(p.secretCache,
-		controlPlane.Namespace,
-		controlPlane.Spec.ETCDSnapshotCloudCredentialName,
-		convert.ToString(config["etcd-s3-region"]))
+	if controlPlane.Spec.ETCD.DisableSnapshots {
+		config["etcd-disable-snapshot"] = true
+	}
+	if controlPlane.Spec.ETCD.SnapshotRetention > 0 {
+		config["etcd-snapshot-retention"] = controlPlane.Spec.ETCD.SnapshotRetention
+	}
+	if controlPlane.Spec.ETCD.SnapshotScheduleCron != "" {
+		config["etcd-snapshot-schedule-cron"] = controlPlane.Spec.ETCD.SnapshotScheduleCron
+	}
+
+	args, _, files, err := p.etcdArgs.ToArgs(controlPlane.Spec.ETCD.S3, controlPlane)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	for _, arg := range args {
+		k, v := kv.Split(arg, "=")
+		k = strings.TrimPrefix(k, "--")
+		if v == "" {
+			config[k] = true
+		} else {
+			config[k] = v
+		}
+	}
+	result = files
 
-	config["etcd-s3-access-key"] = cred.AccessKey
-	config["etcd-s3-secret-key"] = cred.SecretKey
-	config["etcd-s3-region"] = cred.Region
-	return nil
+	return
 }
 
 func addDefaults(config map[string]interface{}, controlPlane *rkev1.RKEControlPlane, machine *capi.Machine) {
@@ -546,12 +606,16 @@ func addRoleConfig(config map[string]interface{}, controlPlane *rkev1.RKEControl
 		config["server"] = joinServer
 	}
 
-	if isOnlyEtcd(machine) {
+	if IsOnlyEtcd(machine) {
 		config["disable-scheduler"] = true
 		config["disable-apiserver"] = true
 		config["disable-controller-manager"] = true
 	} else if isOnlyControlPlane(machine) {
 		config["disable-etcd"] = true
+	}
+
+	if nodeName := machine.Labels[NodeNameLabel]; nodeName != "" {
+		config["node-name"] = nodeName
 	}
 }
 
@@ -665,11 +729,7 @@ func (p *Planner) addInstruction(nodePlan plan.NodePlan, controlPlane *rkev1.RKE
 	}
 
 	if isOnlyWorker(machine) {
-		if GetRuntime(controlPlane.Spec.KubernetesVersion) == RuntimeRKE2 {
-			instruction.Env = append(instruction.Env, fmt.Sprintf("INSTALL_%s_TYPE=agent", GetRuntimeEnv(controlPlane.Spec.KubernetesVersion)))
-		} else {
-			instruction.Env = append(instruction.Env, fmt.Sprintf("INSTALL_%s_EXEC=agent", GetRuntimeEnv(controlPlane.Spec.KubernetesVersion)))
-		}
+		instruction.Env = append(instruction.Env, fmt.Sprintf("INSTALL_%s_EXEC=agent", GetRuntimeEnv(controlPlane.Spec.KubernetesVersion)))
 	}
 	nodePlan.Instructions = append(nodePlan.Instructions, instruction)
 	return nodePlan, nil
@@ -679,15 +739,15 @@ func (p *Planner) addInitNodeInstruction(nodePlan plan.NodePlan, controlPlane *r
 	nodePlan.Instructions = append(nodePlan.Instructions, plan.Instruction{
 		Name:       "capture-address",
 		Image:      getInstallerImage(controlPlane),
-		Command:    "curl",
+		Command:    "sh",
 		SaveOutput: true,
 		Args: []string{
-			"-f",
-			"--retry", "20",
-			"--retry-delay", "5",
-			"--cacert", fmt.Sprintf("/var/lib/rancher/%s/server/tls/server-ca.crt",
-				GetRuntime(controlPlane.Spec.KubernetesVersion)),
-			fmt.Sprintf("https://localhost:%d/db/info", GetRuntimeSupervisorPort(controlPlane.Spec.KubernetesVersion)),
+			"-c",
+			// the grep here is to make the command fail if we don't get the output we expect, like empty string.
+			fmt.Sprintf("curl -f --retry 100 --retry-delay 5 --cacert "+
+				"/var/lib/rancher/%s/server/tls/server-ca.crt https://localhost:%d/db/info | grep 'clientURLs'",
+				GetRuntime(controlPlane.Spec.KubernetesVersion),
+				GetRuntimeSupervisorPort(controlPlane.Spec.KubernetesVersion)),
 		},
 	})
 	return nodePlan, nil
@@ -772,9 +832,11 @@ func (p *Planner) addConfigFile(nodePlan plan.NodePlan, controlPlane *rkev1.RKEC
 	}
 	nodePlan.Files = append(nodePlan.Files, files...)
 
-	if err := p.addETCDSnapshotCredential(config, controlPlane, machine); err != nil {
+	files, err = p.addETCD(config, controlPlane, machine)
+	if err != nil {
 		return nodePlan, err
 	}
+	nodePlan.Files = append(nodePlan.Files, files...)
 
 	addRoleConfig(config, controlPlane, machine, initNode, joinServer)
 	addLocalClusterAuthenticationEndpointConfig(config, controlPlane, machine)
@@ -815,28 +877,35 @@ func (p *Planner) addConfigFile(nodePlan plan.NodePlan, controlPlane *rkev1.RKEC
 	return nodePlan, nil
 }
 
-func (p *Planner) desiredPlan(controlPlane *rkev1.RKEControlPlane, secret plan.Secret, entry planEntry, initNode bool, joinServer string) (plan.NodePlan, error) {
-	nodePlan, err := commonNodePlan(p.secretCache, controlPlane, plan.NodePlan{})
-	if err != nil {
-		return nodePlan, err
+func (p *Planner) desiredPlan(controlPlane *rkev1.RKEControlPlane, secret plan.Secret, entry planEntry, initNode bool, joinServer string) (nodePlan plan.NodePlan, err error) {
+	if !controlPlane.Spec.UnmanagedConfig {
+		nodePlan, err = commonNodePlan(p.secretCache, controlPlane, plan.NodePlan{})
+		if err != nil {
+			return nodePlan, err
+		}
+
+		nodePlan, err = p.addConfigFile(nodePlan, controlPlane, entry.Machine, secret, initNode, joinServer)
+		if err != nil {
+			return nodePlan, err
+		}
+
+		nodePlan, err = p.addManifests(nodePlan, controlPlane, entry.Machine)
+		if err != nil {
+			return nodePlan, err
+		}
+
+		nodePlan, err = p.addChartConfigs(nodePlan, controlPlane, entry.Machine)
+		if err != nil {
+			return nodePlan, err
+		}
+
+		nodePlan, err = p.addOtherFiles(nodePlan, controlPlane, entry.Machine)
+		if err != nil {
+			return nodePlan, err
+		}
 	}
 
-	nodePlan, err = p.addConfigFile(nodePlan, controlPlane, entry.Machine, secret, initNode, joinServer)
-	if err != nil {
-		return nodePlan, err
-	}
-
-	nodePlan, err = p.addManifests(nodePlan, controlPlane, entry.Machine)
-	if err != nil {
-		return nodePlan, err
-	}
-
-	nodePlan, err = p.addChartConfigs(nodePlan, controlPlane, entry.Machine)
-	if err != nil {
-		return nodePlan, err
-	}
-
-	nodePlan, err = p.addOtherFiles(nodePlan, controlPlane, entry.Machine)
+	nodePlan, err = p.addProbes(nodePlan, controlPlane, entry.Machine)
 	if err != nil {
 		return nodePlan, err
 	}
@@ -847,7 +916,7 @@ func (p *Planner) desiredPlan(controlPlane *rkev1.RKEControlPlane, secret plan.S
 		return nodePlan, err
 	}
 
-	if initNode && isOnlyEtcd(entry.Machine) {
+	if initNode && IsOnlyEtcd(entry.Machine) {
 		nodePlan, err = p.addInitNodeInstruction(nodePlan, controlPlane, entry.Machine)
 		if err != nil {
 			return nodePlan, err
@@ -873,7 +942,7 @@ func isInitNode(machine *capi.Machine) bool {
 }
 
 func IsEtcdOnlyInitNode(machine *capi.Machine) bool {
-	return isInitNode(machine) && isOnlyEtcd(machine)
+	return isInitNode(machine) && IsOnlyEtcd(machine)
 }
 
 func none(_ *capi.Machine) bool {
@@ -884,7 +953,7 @@ func isControlPlane(machine *capi.Machine) bool {
 	return machine.Labels[ControlPlaneRoleLabel] == "true"
 }
 
-func isOnlyEtcd(machine *capi.Machine) bool {
+func IsOnlyEtcd(machine *capi.Machine) bool {
 	return isEtcd(machine) && !isControlPlane(machine)
 }
 
@@ -938,17 +1007,7 @@ func (p *Planner) generateSecrets(controlPlane *rkev1.RKEControlPlane, fullPlan 
 }
 
 func (p *Planner) ensureRKEStateSecret(controlPlane *rkev1.RKEControlPlane, fullPlan *plan.Plan) (string, plan.Secret, error) {
-	hasControlPlaneOrEtcd := false
-	for _, machine := range fullPlan.Machines {
-		if isControlPlane(machine) || isEtcd(machine) {
-			hasControlPlaneOrEtcd = true
-			break
-		}
-	}
-
-	if !hasControlPlaneOrEtcd {
-		// In this situation we are either waiting for control plane/etcd to be created or
-		// this is an externally formed cluster and we don't manage the token
+	if controlPlane.Spec.UnmanagedConfig {
 		return "", plan.Secret{}, nil
 	}
 

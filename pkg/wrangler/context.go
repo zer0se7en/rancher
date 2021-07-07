@@ -12,6 +12,7 @@ import (
 	fleetv1alpha1api "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
 	"github.com/rancher/lasso/pkg/controller"
 	"github.com/rancher/lasso/pkg/dynamic"
+	"github.com/rancher/norman/types"
 	catalogv1 "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
 	clusterv3api "github.com/rancher/rancher/pkg/apis/cluster.cattle.io/v3"
 	managementv3api "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -53,7 +54,9 @@ import (
 	"github.com/rancher/wrangler/pkg/schemes"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/discovery"
@@ -88,6 +91,7 @@ var (
 )
 
 func init() {
+	metav1.AddToGroupVersion(Scheme, schema.GroupVersion{Version: "v1"})
 	utilruntime.Must(AddToScheme(Scheme))
 	utilruntime.Must(schemes.AddToScheme(Scheme))
 }
@@ -130,6 +134,7 @@ type Context struct {
 }
 
 type MultiClusterManager interface {
+	NormanSchemas() *types.Schemas
 	ClusterDialer(clusterID string) func(ctx context.Context, network, address string) (net.Conn, error)
 	Start(ctx context.Context) error
 	Wait(ctx context.Context)
@@ -142,20 +147,17 @@ func (w *Context) OnLeader(f func(ctx context.Context) error) {
 }
 
 func (w *Context) StartWithTransaction(ctx context.Context, f func(context.Context) error) (err error) {
-	defer func() {
-		if err == nil {
-			err = w.Start(ctx)
-		}
-	}()
-
-	w.controllerLock.Lock()
-	defer w.controllerLock.Unlock()
-
 	transaction := controller.NewHandlerTransaction(ctx)
 	if err := f(transaction); err != nil {
 		transaction.Rollback()
 		return err
 	}
+
+	if err = w.Start(ctx); err != nil {
+		return err
+	}
+
+	w.SharedControllerFactory.SharedCacheFactory().WaitForCacheSync(ctx)
 	transaction.Commit()
 	return nil
 }
@@ -283,7 +285,7 @@ func NewContext(ctx context.Context, clientConfig clientcmd.ClientConfig, restCo
 	}
 
 	tunnelAuth := &tunnelserver.Authorizers{}
-	tunnelServer := remotedialer.New(tunnelAuth.Authorize, remotedialer.DefaultErrorWriter)
+	tunnelServer := remotedialer.New(tunnelAuth.Authorize, tunnelserver.ErrorWriter)
 	peerManager, err := tunnelserver.NewPeerManager(ctx, steveControllers.Core.Endpoints(), tunnelServer)
 	if err != nil {
 		return nil, err
@@ -329,6 +331,10 @@ func NewContext(ctx context.Context, clientConfig clientcmd.ClientConfig, restCo
 }
 
 type noopMCM struct {
+}
+
+func (n noopMCM) NormanSchemas() *types.Schemas {
+	return nil
 }
 
 func (n noopMCM) ClusterDialer(clusterID string) func(ctx context.Context, network string, address string) (net.Conn, error) {

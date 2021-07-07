@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	defaultSystemAgentInstallScript = "https://raw.githubusercontent.com/ibuildthecloud/system-agent/main/install.sh"
+	defaultSystemAgentInstallScript = "https://raw.githubusercontent.com/rancher/system-agent/main/install.sh"
 	localAgentInstallScripts        = []string{
 		"/usr/share/rancher/ui/assets/system-agent-install.sh",
 		"./system-agent-install.sh",
@@ -43,15 +43,19 @@ func InstallScript(token string, envVars []corev1.EnvVar) ([]byte, error) {
 		}
 		envVarBuf.WriteString(fmt.Sprintf("%s=\"%s\"\n", envVar.Name, envVar.Value))
 	}
+	server := ""
+	if settings.ServerURL.Get() != "" {
+		server = fmt.Sprintf("CATTLE_SERVER=%s", settings.ServerURL.Get())
+	}
 	return []byte(fmt.Sprintf(`#!/usr/bin/env sh
 %s
 %s
-CATTLE_SERVER="%s"
+%s
 %s
 %s
 
 %s
-`, envVarBuf.String(), binaryURL, settings.ServerURL.Get(), ca, token, data)), nil
+`, envVarBuf.String(), binaryURL, server, ca, token, data)), nil
 }
 
 func installScript() ([]byte, error) {

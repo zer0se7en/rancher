@@ -1,23 +1,20 @@
 package clusteroperator
 
 import (
+	"encoding/base64"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/rancher/norman/condition"
-	apiprojv3 "github.com/rancher/rancher/pkg/apis/project.cattle.io/v3"
-	utils2 "github.com/rancher/rancher/pkg/app"
+	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/catalog/manager"
-	"github.com/rancher/rancher/pkg/controllers/management/rbac"
 	v3 "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	corev1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	mgmtv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	projectv3 "github.com/rancher/rancher/pkg/generated/norman/project.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/kontainer-engine/drivers/util"
 	"github.com/rancher/rancher/pkg/namespace"
-	"github.com/rancher/rancher/pkg/project"
-	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/systemaccount"
 	typesDialer "github.com/rancher/rancher/pkg/types/config/dialer"
 	wranglerv1 "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
@@ -25,9 +22,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -48,93 +47,7 @@ type OperatorController struct {
 	SystemAccountManager *systemaccount.Manager
 	DynamicClient        dynamic.NamespaceableResourceInterface
 	ClientDialer         typesDialer.Factory
-}
-
-type operatorValues struct {
-	HTTPProxy  string `json:"httpProxy,omitempty"`
-	HTTPSProxy string `json:"httpsProxy,omitempty"`
-	NoProxy    string `json:"noProxy,omitempty"`
-}
-
-func (e *OperatorController) DeployOperator(operator, operatorTemplate, shortName string) error {
-	template, err := e.TemplateCache.Get(namespace.GlobalNamespace, operatorTemplate)
-	if err != nil {
-		return err
-	}
-
-	latestTemplateVersion, err := e.CatalogManager.LatestAvailableTemplateVersion(template, localCluster)
-	if err != nil {
-		return err
-	}
-
-	latestVersionID := latestTemplateVersion.ExternalID
-
-	systemProject, err := project.GetSystemProject(localCluster, e.ProjectCache)
-	if err != nil {
-		return err
-	}
-
-	systemProjectID := ref.Ref(systemProject)
-	_, systemProjectName := ref.Parse(systemProjectID)
-
-	valuesYaml, err := generateValuesYaml()
-	if err != nil {
-		return err
-	}
-
-	app, err := e.AppLister.Get(systemProjectName, operator)
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return err
-		}
-		logrus.Infof("deploying %s operator into local cluster's system project", shortName)
-		creator, err := e.SystemAccountManager.GetSystemUser(localCluster)
-		if err != nil {
-			return err
-		}
-
-		appProjectName, err := utils2.EnsureAppProjectName(e.NsClient, systemProjectName, localCluster, systemNS, creator.Name)
-		if err != nil {
-			return err
-		}
-
-		desiredApp := &apiprojv3.App{
-			ObjectMeta: v1.ObjectMeta{
-				Name:      operator,
-				Namespace: systemProjectName,
-				Annotations: map[string]string{
-					rbac.CreatorIDAnn: creator.Name,
-				},
-			},
-			Spec: apiprojv3.AppSpec{
-				Description:     fmt.Sprintf("Operator for provisioning %s clusters", shortName),
-				ExternalID:      latestVersionID,
-				ProjectName:     appProjectName,
-				TargetNamespace: systemNS,
-			},
-		}
-
-		desiredApp.Spec.ValuesYaml = valuesYaml
-
-		if _, err = e.AppClient.Create(desiredApp); err != nil {
-			return err
-		}
-	} else {
-		if app.Spec.ExternalID == latestVersionID && app.Spec.ValuesYaml == valuesYaml {
-			// app is up to date, no action needed
-			return nil
-		}
-		logrus.Infof("updating %s operator in local cluster's system project", shortName)
-		desiredApp := app.DeepCopy()
-		desiredApp.Spec.ExternalID = latestVersionID
-		desiredApp.Spec.ValuesYaml = valuesYaml
-		// new version of operator upgrade available, update app
-		if _, err = e.AppClient.Update(desiredApp); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	Discovery            discovery.DiscoveryInterface
 }
 
 func (e *OperatorController) SetUnknown(cluster *mgmtv3.Cluster, condition condition.Cond, message string) (*mgmtv3.Cluster, error) {
@@ -182,25 +95,6 @@ func (e *OperatorController) SetFalse(cluster *mgmtv3.Cluster, condition conditi
 	return cluster, nil
 }
 
-// generateValuesYaml generates a YAML string containing any
-// necessary values to override defaults in values.yaml. If
-// no defaults need to be overwritten, an empty string will
-// be returned.
-func generateValuesYaml() (string, error) {
-	values := operatorValues{
-		HTTPProxy:  os.Getenv("HTTP_PROXY"),
-		HTTPSProxy: os.Getenv("HTTPS_PROXY"),
-		NoProxy:    os.Getenv("NO_PROXY"),
-	}
-
-	valuesYaml, err := yaml.Marshal(values)
-	if err != nil {
-		return "", err
-	}
-
-	return string(valuesYaml), nil
-}
-
 // RecordCAAndAPIEndpoint reads the cluster config's secret once available. The CA cert and API endpoint are then copied to the cluster status.
 func (e *OperatorController) RecordCAAndAPIEndpoint(cluster *mgmtv3.Cluster) (*mgmtv3.Cluster, error) {
 	backoff := wait.Backoff{
@@ -232,7 +126,10 @@ func (e *OperatorController) RecordCAAndAPIEndpoint(cluster *mgmtv3.Cluster) (*m
 	if !strings.HasPrefix(apiEndpoint, "https://") {
 		apiEndpoint = "https://" + apiEndpoint
 	}
-	caCert := string(caSecret.Data["ca"])
+	caCert, err := addAdditionalCA(e.SecretsCache, string(caSecret.Data["ca"]))
+	if err != nil {
+		return cluster, err
+	}
 	if cluster.Status.APIEndpoint == apiEndpoint && cluster.Status.CACert == caCert {
 		return cluster, nil
 	}
@@ -250,4 +147,59 @@ func (e *OperatorController) RecordCAAndAPIEndpoint(cluster *mgmtv3.Cluster) (*m
 	})
 
 	return currentCluster, err
+}
+
+// checkCRDReady checks whether necessary CRD(AKSConfig/EKSConfig/GKEConfig), has been created yet
+func (e *OperatorController) CheckCrdReady(cluster *mgmtv3.Cluster, clusterType string) (*mgmtv3.Cluster, error) {
+	resources, err := e.Discovery.ServerResourcesForGroupVersion(fmt.Sprintf("%s.cattle.io/v1", clusterType))
+	if err != nil && !errors.IsNotFound(err) {
+		return cluster, err
+	}
+	if errors.IsNotFound(err) || len(resources.APIResources) == 0 {
+		cluster, err = e.SetUnknown(cluster, apimgmtv3.ClusterConditionProvisioned, fmt.Sprintf("Waiting on %s crd to be initialized", clusterType))
+		if err != nil {
+			return cluster, err
+		}
+		return cluster, fmt.Errorf("waiting %s crd to be initialized, cluster: %v", clusterType, cluster.Name)
+	}
+	return cluster, nil
+}
+
+func GenerateSAToken(restConfig *rest.Config) (string, error) {
+	clientSet, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset: %v", err)
+	}
+
+	return util.GenerateServiceAccountToken(clientSet)
+}
+
+func addAdditionalCA(secretsCache wranglerv1.SecretCache, caCert string) (string, error) {
+	additionalCA, err := getAdditionalCA(secretsCache)
+	if err != nil {
+		return caCert, err
+	}
+	if additionalCA == nil {
+		return caCert, nil
+	}
+
+	caBytes, err := base64.StdEncoding.DecodeString(caCert)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(append(caBytes, additionalCA...)), nil
+}
+
+func getAdditionalCA(secretsCache wranglerv1.SecretCache) ([]byte, error) {
+	secret, err := secretsCache.Get(namespace.System, "tls-ca-additional")
+	if err != nil && !errors.IsNotFound(err) {
+		return nil, err
+	}
+
+	if secret == nil {
+		return nil, nil
+	}
+
+	return secret.Data["ca-additional.pem"], nil
 }

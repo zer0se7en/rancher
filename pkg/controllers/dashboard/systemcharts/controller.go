@@ -6,16 +6,19 @@ import (
 
 	catalog "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
 	"github.com/rancher/rancher/pkg/catalogv2/system"
+	"github.com/rancher/rancher/pkg/controllers/dashboard/chart"
 	"github.com/rancher/rancher/pkg/features"
 	namespaces "github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rancher/pkg/wrangler"
+	corecontrollers "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/pkg/relatedresource"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
 var (
-	toInstall = []chartDef{
+	toInstall = []chart.Definition{
 		{
 			ReleaseNamespace:  namespaces.System,
 			ChartName:         "rancher-webhook",
@@ -24,6 +27,9 @@ var (
 				return map[string]interface{}{
 					"capi": map[string]interface{}{
 						"enabled": features.EmbeddedClusterAPI.Enabled(),
+					},
+					"mcm": map[string]interface{}{
+						"enabled": features.MCM.Enabled(),
 					},
 				}
 			},
@@ -35,23 +41,16 @@ var (
 			ReleaseNamespace: "rancher-operator-system",
 			ChartName:        "rancher-operator",
 			Uninstall:        true,
+			RemoveNamespace:  true,
 		},
 	}
 	repoName = "rancher-charts"
 )
 
-type chartDef struct {
-	ReleaseNamespace  string
-	ChartName         string
-	MinVersionSetting settings.Setting
-	Values            func() map[string]interface{}
-	Enabled           func() bool
-	Uninstall         bool
-}
-
 func Register(ctx context.Context, wContext *wrangler.Context) error {
 	h := &handler{
-		manager: wContext.SystemChartsManager,
+		manager:    wContext.SystemChartsManager,
+		namespaces: wContext.Core.Namespace(),
 	}
 
 	wContext.Catalog.ClusterRepo().OnChange(ctx, "bootstrap-charts", h.onRepo)
@@ -64,8 +63,9 @@ func Register(ctx context.Context, wContext *wrangler.Context) error {
 }
 
 type handler struct {
-	manager *system.Manager
-	once    sync.Once
+	manager    *system.Manager
+	namespaces corecontrollers.NamespaceController
+	once       sync.Once
 }
 
 func (h *handler) onRepo(key string, repo *catalog.ClusterRepo) (*catalog.ClusterRepo, error) {
@@ -87,6 +87,11 @@ func (h *handler) onRepo(key string, repo *catalog.ClusterRepo) (*catalog.Cluste
 			if err := h.manager.Uninstall(chartDef.ReleaseNamespace, chartDef.ChartName); err != nil {
 				return repo, err
 			}
+			if chartDef.RemoveNamespace {
+				if err := h.namespaces.Delete(chartDef.ReleaseNamespace, nil); err != nil && !errors.IsNotFound(err) {
+					return repo, err
+				}
+			}
 			continue
 		}
 
@@ -98,7 +103,7 @@ func (h *handler) onRepo(key string, repo *catalog.ClusterRepo) (*catalog.Cluste
 				values[k] = v
 			}
 		}
-		if err := h.manager.Ensure(chartDef.ReleaseNamespace, chartDef.ChartName, chartDef.MinVersionSetting.Get(), values); err != nil {
+		if err := h.manager.Ensure(chartDef.ReleaseNamespace, chartDef.ChartName, chartDef.MinVersionSetting.Get(), values, false); err != nil {
 			return repo, err
 		}
 	}

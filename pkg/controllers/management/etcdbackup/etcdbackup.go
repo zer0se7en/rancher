@@ -18,8 +18,8 @@ import (
 
 	rketypes "github.com/rancher/rke/types"
 
-	minio "github.com/minio/minio-go"
-	"github.com/minio/minio-go/pkg/credentials"
+	minio "github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/rancher/rancher/pkg/controllers/management/clusterprovisioner"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/kontainer-engine/drivers/rke"
@@ -228,7 +228,9 @@ func (c *Controller) etcdSaveWithBackoff(b *v3.EtcdBackup) (runtime.Object, erro
 			}
 			return true, nil
 		})
-
+		if err != nil {
+			return b, err
+		}
 		return b, inErr
 	})
 	if err != nil {
@@ -395,7 +397,6 @@ func GetS3Client(sbc *rketypes.S3BackupConfig, timeout int, dialer dialer.Dialer
 	if sbc == nil {
 		return nil, fmt.Errorf("Can't find S3 backup target configuration")
 	}
-	var s3Client = &minio.Client{}
 	var creds *credentials.Credentials
 	var tr http.RoundTripper = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -420,19 +421,20 @@ func GetS3Client(sbc *rketypes.S3BackupConfig, timeout int, dialer dialer.Dialer
 	}
 
 	bucketLookup := getBucketLookupType(endpoint)
-	s3Client, err := minio.NewWithOptions(endpoint, &minio.Options{
+	opt := minio.Options{
 		Creds:        creds,
 		Region:       sbc.Region,
 		Secure:       true,
 		BucketLookup: bucketLookup,
-	})
+		Transport:    tr,
+	}
+	if sbc.CustomCA != "" {
+		opt.Transport = getCustomCATransport(tr, sbc.CustomCA)
+	}
+	s3Client, err := minio.New(endpoint, &opt)
 	if err != nil {
 		return nil, err
 	}
-	if sbc.CustomCA != "" {
-		tr = getCustomCATransport(tr, sbc.CustomCA)
-	}
-	s3Client.SetCustomTransport(tr)
 	return s3Client, nil
 }
 
